@@ -1,7 +1,7 @@
 """Pawblic Address (PA): phone mic -> Flask -> ffmpeg -> Q-SYS Media Stream Receiver.
 
 Run:  python app.py
-Open: https://<this-machine-ip>:5000 on the phone (HTTPS is required for mic access).
+Open: https://<this-machine-ip>:7100 on the phone (HTTPS is required for mic access).
 """
 
 import json
@@ -90,5 +90,5 @@ if __name__ == "__main__":
     if ssl_context is None:
         log.warning("cert.pem/key.pem not found: serving plain HTTP. Phones will NOT "
                     "allow mic access over http. See README for a one-line cert.")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)),
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 7100)),
             ssl_context=ssl_context, threaded=True, debug=False)

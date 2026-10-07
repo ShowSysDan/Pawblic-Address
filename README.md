@@ -42,13 +42,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
 python app.py
 ```
 
-Then on the phone open `https://<server-ip>:5000`, accept the certificate warning once, and tap **Go live**.
+Then on the phone open `https://<server-ip>:7100`, accept the certificate warning once, and tap **Go live**.
 
 Settings are stored in `settings.json` next to `app.py`. Environment variables:
 
 | Variable        | Default        | Purpose                        |
 |-----------------|----------------|--------------------------------|
-| `PORT`          | `5000`         | HTTPS port for the web page    |
+| `PORT`          | `7100`         | HTTPS port for the web page    |
 | `FFMPEG_BIN`    | `ffmpeg`       | Path to the ffmpeg binary      |
 | `SETTINGS_FILE` | `settings.json`| Where settings are stored      |
 
