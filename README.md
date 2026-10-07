@@ -14,36 +14,122 @@ Phone browser ──raw PCM over WebSocket──▶ Flask ──stdin──▶ f
 Proof of concept: one page, one button, one destination. The version is in the page footer;
 see [CHANGELOG.md](CHANGELOG.md) for what changed.
 
-## Requirements
+## Install (Linux server, runs as a service)
 
-- Python 3.10+
-- ffmpeg on the PATH (tested with 6.1; needs `libmp3lame`)
-- The phone and the server on a network that can reach the Core
+Pawblic Address installs into your home folder and runs as a systemd service under your
+user account. It starts at boot and restarts itself if it crashes. These steps are for
+Ubuntu, Debian or Raspberry Pi OS. Other systemd distributions work too, with their own
+package names.
 
-## Setup
+You need:
+- a server the phones can reach and that can reach the Q-SYS Core;
+- Python 3.10 or newer, ffmpeg (with `libmp3lame`, as Debian's and Ubuntu's are) and openssl;
+- an account that can use `sudo`, to install the service file.
+
+**1. Install the system packages**
 
 ```bash
-git clone https://github.com/ShowSysDan/Pawblic-Address.git && cd Pawblic-Address
-python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+sudo apt update
+sudo apt install -y git python3 python3-venv ffmpeg openssl
 ```
 
-Phones only allow microphone access over HTTPS, so make a self-signed certificate once:
+**2. Get the app into your home folder.** Do this as the user the service will run as, not
+as root:
 
 ```bash
+cd ~
+git clone https://github.com/ShowSysDan/Pawblic-Address.git
+cd Pawblic-Address
+```
+
+**3. Install and start the service**
+
+```bash
+./deploy/install-service.sh
+```
+
+It asks for your password once, for `sudo`, and then:
+1. creates `~/Pawblic-Address/.venv` and installs the Python packages;
+2. makes a self-signed HTTPS certificate (`cert.pem`, `key.pem`) if there isn't one already.
+   Phones only allow the microphone over HTTPS;
+3. installs `/etc/systemd/system/pawblic-address.service` from
+   `deploy/pawblic-address.service`, set up to run as you from this folder;
+4. starts the service, enables it at boot, checks it answers, and prints the address to
+   open.
+
+To use a port other than 7100, run `PORT=8443 ./deploy/install-service.sh`.
+
+**4. Open the port if the server has a firewall**, e.g. `sudo ufw allow 7100/tcp`.
+
+**5. On a phone, open `https://<server-ip>:7100`.** Accept the certificate warning once,
+enter the Core's IP and port under **Destination**, tap **Save changes**, then **Go live**.
+(`mkcert` or an internal CA gives you a certificate phones trust without the warning;
+replace `cert.pem` and `key.pem` and restart.)
+
+### Managing the service
+
+| To | Run |
+|----|-----|
+| See if it's running | `systemctl status pawblic-address` |
+| Watch the log | `journalctl -u pawblic-address -f` |
+| Restart | `sudo systemctl restart pawblic-address` |
+| Stop / start | `sudo systemctl stop pawblic-address` / `sudo systemctl start pawblic-address` |
+| Don't start at boot | `sudo systemctl disable pawblic-address` |
+
+Stopping ends any live page cleanly: the server stops ffmpeg and logs
+`page_stop reason=shutdown` and `service_stop`.
+
+### Updating
+
+```bash
+cd ~/Pawblic-Address
+git pull
+./deploy/install-service.sh
+```
+
+Re-running the install script updates the Python packages and the service file, then restarts
+the service. Your `settings.json` and certificate are kept. Phones that still have the page
+open show **Server updated… Reload**.
+
+### Uninstalling
+
+```bash
+sudo systemctl disable --now pawblic-address
+sudo rm /etc/systemd/system/pawblic-address.service
+sudo systemctl daemon-reload
+rm -rf ~/Pawblic-Address
+```
+
+### Installing by hand
+
+If you'd rather not use the script, here's what it does:
+
+```bash
+cd ~/Pawblic-Address
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
   -keyout key.pem -out cert.pem -subj "/CN=pawblic-address"
+chmod 600 key.pem
+sed -e "s|@USER@|$USER|g" -e "s|@APP_DIR@|$PWD|g" -e "s|@PORT@|7100|g" \
+  deploy/pawblic-address.service | sudo tee /etc/systemd/system/pawblic-address.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now pawblic-address
 ```
 
-(`mkcert` gives you a cert the phone trusts without a warning, if you'd rather.)
+### Running in a terminal instead
 
-## Run
+For a quick test, or on a machine without systemd (Windows: `.venv\Scripts\activate`):
 
 ```bash
-python app.py
+cd ~/Pawblic-Address
+source .venv/bin/activate      # after creating it as above
+python app.py                  # Ctrl-C to stop
 ```
 
-Then on the phone open `https://<server-ip>:7100`, accept the certificate warning once, and tap **Go live**.
+Without `cert.pem` and `key.pem` it serves plain HTTP, and phones won't allow the microphone.
+
+## Using it
 
 Under the logo, a dot shows whether the page can reach the server. The page asks
 `/api/health` every 5 seconds: green means connected, amber means it missed a check, and
@@ -51,16 +137,15 @@ red means it can't reach the server. If the server has been updated since the pa
 opened, the indicator says so and offers **Reload**.
 
 Settings (the Q-SYS destination and the syslog server) are set on the page and stored in
-`settings.json` next to `app.py`. Environment variables:
+`~/Pawblic-Address/settings.json`. The service's own log goes to the journal
+(`journalctl -u pawblic-address`). Environment variables, set in the service file or before
+`python app.py`:
 
 | Variable        | Default        | Purpose                        |
 |-----------------|----------------|--------------------------------|
 | `PORT`          | `7100`         | HTTPS port for the web page    |
 | `FFMPEG_BIN`    | `ffmpeg`       | Path to the ffmpeg binary      |
 | `SETTINGS_FILE` | `settings.json`| Where settings are stored      |
-
-To run it as a service, have the service manager stop it with SIGTERM (systemd and Docker do
-by default). On SIGTERM the server ends any live page, stops ffmpeg and logs `service_stop`.
 
 ## Q-SYS side
 
@@ -184,6 +269,7 @@ What isn't yet, so plan around it:
 
 ## Troubleshooting
 
+- **The service won't start, or the install script says it didn't answer**: run `journalctl -u pawblic-address -e` for the error. A port already in use is the usual one.
 - **Red "Can't reach the server"** — the server isn't running, or the phone is on a network that can't reach it.
 - **"Server updated… Reload"** — the server was upgraded since the page was opened; tap Reload.
 - **No syslog messages** — use **Send syslog test**; check the server's firewall allows UDP out and the syslog server listens on UDP.
@@ -208,19 +294,21 @@ page to check ffmpeg doesn't outlive it.
 ## Layout
 
 ```
-app.py                       Flask routes + WebSocket audio ingest, security checks
-relay.py                     ffmpeg process per page (command, writer queue, stop, watchdog)
-events.py                    event logging and syslog (RFC 5424 over UDP)
-settings.py                  settings.json load/save/validate
-version.py                   the version number (bump it with every change)
-templates/index.html         the page
-static/app.js                mic capture, WebSocket, settings UI
-static/pcm-worklet.js        AudioWorklet: Float32 → Int16 PCM chunks
-static/logo.svg              logo (also the favicon)
-static/apple-touch-icon.png  home-screen icon for phones
-tests/                       pytest suite, fake ffmpegs, soak.py
-CHANGELOG.md                 what changed in each version
-CLAUDE.md                    project rules
+app.py                          Flask routes + WebSocket audio ingest, security checks
+relay.py                        ffmpeg process per page (command, writer queue, stop, watchdog)
+events.py                       event logging and syslog (RFC 5424 over UDP)
+settings.py                     settings.json load/save/validate
+version.py                      the version number (bump it with every change)
+templates/index.html            the page
+static/app.js                   mic capture, WebSocket, settings UI
+static/pcm-worklet.js           AudioWorklet: Float32 → Int16 PCM chunks
+static/logo.svg                 logo (also the favicon)
+static/apple-touch-icon.png     home-screen icon for phones
+tests/                          pytest suite, fake ffmpegs, soak.py
+deploy/install-service.sh       installs/updates the systemd service
+deploy/pawblic-address.service  systemd unit template
+CHANGELOG.md                    what changed in each version
+CLAUDE.md                       project rules
 ```
 
 ## Next
@@ -228,5 +316,5 @@ CLAUDE.md                    project rules
 - Level meter on the page
 - Several saved destinations
 - Password on the page (see Security)
-- gunicorn + systemd / Dockerfile
+- Dockerfile
 - Opus over RTP if the Core gains support for it

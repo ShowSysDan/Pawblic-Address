@@ -3,6 +3,15 @@
 Every change to Pawblic Address gets a new version number here and in `version.py`
 (see CLAUDE.md). Newest first.
 
+## [0.5.0] - 2026-10-07
+
+### Added
+- Runs as a systemd service from the user's home folder. `deploy/install-service.sh` sets up
+  the venv and certificate, installs and starts the service, checks it answers, and doubles
+  as the updater. The unit template is `deploy/pawblic-address.service`.
+- README install guide: packages, install, firewall, managing the service, updating,
+  uninstalling, installing by hand.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added

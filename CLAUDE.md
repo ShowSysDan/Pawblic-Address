@@ -40,5 +40,8 @@ branch.
 - **Latency first.** Don't undo the latency choices listed in the README ("Things already
   done for you"): no MediaRecorder, no browser DSP, `-probesize 32 -analyzeduration 0`,
   no `-fflags nobuffer`, one MP3 frame per RTP packet, and drop audio rather than queue it.
+- **Installs are a service.** If you change how the app starts (files it needs, ports,
+  environment variables), update `deploy/` and the README's install section to match.
+  The install script has to stay safe to re-run, since that's how updates are done.
 - Keep the page usable at phone width, and keep the branding (amber `--brand`, the paw
   logo).

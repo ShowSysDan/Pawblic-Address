@@ -1,0 +1,27 @@
+# Pawblic Address as a systemd service. deploy/install-service.sh fills in the @...@
+# placeholders and installs this as /etc/systemd/system/pawblic-address.service.
+[Unit]
+Description=Pawblic Address (PA): phone mic to Q-SYS
+Documentation=https://github.com/ShowSysDan/Pawblic-Address
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@APP_DIR@
+ExecStart=@APP_DIR@/.venv/bin/python @APP_DIR@/app.py
+Environment=PORT=@PORT@
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+# SIGTERM goes to the app alone, so it can end a live page and stop ffmpeg itself.
+# Anything still running after TimeoutStopSec is killed.
+KillMode=mixed
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
