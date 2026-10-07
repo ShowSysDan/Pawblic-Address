@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-version="{{ version }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -7,8 +7,8 @@
 <title>Pawblic Address</title>
 <meta name="application-name" content="Pawblic Address">
 <meta name="apple-mobile-web-app-title" content="PA">
-<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="icon" href="/static/logo.svg?v={{ version }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v={{ version }}">
 <style>
   :root {
     --bg: #232a33;
@@ -20,6 +20,8 @@
     --live: #e8322c;
     --live-glow: rgba(232, 50, 44, .45);
     --brand: #f4b740;
+    --ok: #3ddc84;
+    --error-text: #ffb4b0;
     --focus: var(--brand);
     box-sizing: border-box;
     padding-top: env(safe-area-inset-top, 0px);
@@ -52,12 +54,50 @@
   h1 span { color: var(--brand); }
   .lede { margin: 0; color: var(--muted); }
 
+  /* Is the Python backend answering? */
+  .conn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+    min-height: 32px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .conn .dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--ring);
+    transition: background-color .25s, box-shadow .25s;
+  }
+  .conn[data-state="ok"] .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(61, 220, 132, .2); }
+  .conn[data-state="warn"] .dot,
+  .conn[data-state="stale"] .dot { background: var(--brand); }
+  .conn[data-state="down"] .dot { background: var(--live); }
+  .conn[data-state="down"] { color: var(--error-text); }
+  .conn[data-state="stale"] { color: var(--text); }
+  #reloadBtn {
+    min-height: 32px;
+    margin-left: auto;
+    padding: 0 12px;
+    border: 1px solid var(--brand);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--brand);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #reloadBtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
   /* The tally light. */
   .tally {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 48px 0 40px;
+    padding: 32px 0 40px;
   }
   #liveBtn {
     width: 188px;
@@ -97,10 +137,11 @@
     font-variant-numeric: tabular-nums;
   }
   #status[data-kind="live"]  { color: var(--text); }
-  #status[data-kind="error"] { color: #ffb4b0; }
+  #status[data-kind="error"] { color: var(--error-text); }
 
   /* Destination settings. */
   section { border-top: 1px solid var(--line); padding-top: 20px; }
+  section + section { margin-top: 28px; }
   h2 { font-size: 17px; font-weight: 600; margin: 0 0 14px; }
   .row {
     display: grid;
@@ -123,8 +164,8 @@
     font-variant-numeric: tabular-nums;
   }
   input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-  .actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
-  #saveBtn {
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+  .actions button {
     min-height: 44px;
     padding: 0 18px;
     border: 1px solid var(--ring);
@@ -135,10 +176,20 @@
     font-weight: 600;
     cursor: pointer;
   }
-  #saveBtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-  #saveNote { color: var(--muted); }
-  #saveNote[data-kind="error"] { color: #ffb4b0; }
+  .actions button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .actions button:disabled { opacity: .55; cursor: default; }
+  #saveNote { margin: 10px 0 0; min-height: 1.5em; color: var(--muted); }
+  #saveNote[data-kind="error"] { color: var(--error-text); }
   .hint { margin: 18px 0 0; color: var(--muted); font-size: 14px; }
+  footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
 </style>
 </head>
 <body>
@@ -150,6 +201,12 @@
       <p class="lede">Streams this phone's microphone to the Q-SYS Core.</p>
     </div>
   </header>
+
+  <div class="conn" id="conn" data-state="checking" role="status" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="connText">Checking the server…</span>
+    <button id="reloadBtn" type="button" hidden>Reload</button>
+  </div>
 
   <div class="tally">
     <button id="liveBtn" type="button" aria-pressed="false">Go live</button>
@@ -182,13 +239,30 @@
         <option value="192">192 kbps</option>
       </select>
     </div>
-    <div class="actions">
-      <button id="saveBtn" type="button">Save changes</button>
-      <span id="saveNote" aria-live="polite"></span>
-    </div>
     <p class="hint">On the Core, set the Media Stream Receiver's stream to <code>rtp://:PORT</code> with the same port.</p>
   </section>
+
+  <section aria-labelledby="syslog">
+    <h2 id="syslog">Syslog</h2>
+    <div class="row">
+      <label for="syslog_host">Server</label>
+      <input id="syslog_host" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="Off">
+    </div>
+    <div class="row">
+      <label for="syslog_port">Port</label>
+      <input id="syslog_port" inputmode="numeric" autocomplete="off" placeholder="514">
+    </div>
+    <p class="hint">Page starts and stops (with duration), settings changes and errors go to this server as RFC 5424 over UDP. Leave it blank to turn syslog off.</p>
+  </section>
+
+  <div class="actions">
+    <button id="saveBtn" type="button">Save changes</button>
+    <button id="testBtn" type="button">Send syslog test</button>
+  </div>
+  <p id="saveNote" aria-live="polite"></p>
+
+  <footer>Pawblic Address v{{ version }}</footer>
 </main>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ version }}"></script>
 </body>
 </html>
