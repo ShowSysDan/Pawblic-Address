@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#232a33">
-<title>Mic relay</title>
+<title>Pawblic Address</title>
+<meta name="application-name" content="Pawblic Address">
+<meta name="apple-mobile-web-app-title" content="PA">
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <style>
   :root {
     --bg: #232a33;
@@ -15,7 +19,8 @@
     --ring: #4e5a67;
     --live: #e8322c;
     --live-glow: rgba(232, 50, 44, .45);
-    --focus: #8fb7ff;
+    --brand: #f4b740;
+    --focus: var(--brand);
     box-sizing: border-box;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -35,12 +40,16 @@
     margin: 0 auto;
     padding: 28px 24px 48px;
   }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand img { flex: none; width: 48px; height: 48px; }
   h1 {
     font-size: 22px;
-    font-weight: 600;
+    font-weight: 700;
     letter-spacing: -0.01em;
-    margin: 0 0 4px;
+    line-height: 1.2;
+    margin: 0 0 2px;
   }
+  h1 span { color: var(--brand); }
   .lede { margin: 0; color: var(--muted); }
 
   /* The tally light. */
@@ -134,8 +143,13 @@
 </head>
 <body>
 <main>
-  <h1>Mic relay</h1>
-  <p class="lede">Streams this phone's microphone to the Q-SYS Core.</p>
+  <header class="brand">
+    <img src="/static/logo.svg" alt="">
+    <div>
+      <h1><span>Paw</span>blic Address</h1>
+      <p class="lede">Streams this phone's microphone to the Q-SYS Core.</p>
+    </div>
+  </header>
 
   <div class="tally">
     <button id="liveBtn" type="button" aria-pressed="false">Go live</button>

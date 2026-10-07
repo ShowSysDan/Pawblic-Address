@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pawblic Address">
+  <rect width="64" height="64" rx="14" fill="#f4b740"/>
+  <g transform="translate(32 32) scale(.8) translate(-30.5 -35)" fill="#232a33">
+    <!-- paw -->
+    <path d="M22 32c6 0 13 7 13 13c0 4-3 6-6 6c-3 0-4-1.5-7-1.5s-4 1.5-7 1.5c-3 0-6-2-6-6c0-6 7-13 13-13z"/>
+    <ellipse cx="7.5" cy="30" rx="4" ry="5.5" transform="rotate(-25 7.5 30)"/>
+    <ellipse cx="16" cy="21.5" rx="4.5" ry="6" transform="rotate(-8 16 21.5)"/>
+    <ellipse cx="28" cy="21.5" rx="4.5" ry="6" transform="rotate(8 28 21.5)"/>
+    <ellipse cx="36.5" cy="30" rx="4" ry="5.5" transform="rotate(25 36.5 30)"/>
+    <!-- sound -->
+    <g fill="none" stroke="#232a33" stroke-width="4.5" stroke-linecap="round">
+      <path d="M42.5 19A26 26 0 0 1 42.5 51"/>
+      <path d="M49.6 13.5A35 35 0 0 1 49.6 56.5" opacity=".55"/>
+    </g>
+  </g>
+</svg>

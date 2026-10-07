@@ -1,4 +1,4 @@
-"""Phone mic -> Flask -> ffmpeg -> Q-SYS Media Stream Receiver.
+"""Pawblic Address (PA): phone mic -> Flask -> ffmpeg -> Q-SYS Media Stream Receiver.
 
 Run:  python app.py
 Open: https://<this-machine-ip>:5000 on the phone (HTTPS is required for mic access).

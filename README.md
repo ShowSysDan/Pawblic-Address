@@ -1,6 +1,11 @@
-# qsys-mic-relay
+<p align="center"><img src="static/logo.svg" width="112" alt="Pawblic Address logo"></p>
 
-Streams a phone's microphone to a Q-SYS Core with as little delay as practical.
+<h1 align="center">Pawblic Address</h1>
+
+<p align="center"><b>PA</b> — turn any phone's web browser into a paging mic for a Q-SYS system.</p>
+
+Pawblic Address streams a phone's microphone to a Q-SYS Core with as little delay as practical.
+Open the page, tap **Go live**, talk.
 
 ```
 Phone browser ──raw PCM over WebSocket──▶ Flask ──stdin──▶ ffmpeg ──L16 (or MP3) over RTP──▶ Q-SYS Media Stream Receiver
@@ -17,7 +22,7 @@ Proof of concept: one page, one button, one destination.
 ## Setup
 
 ```bash
-git clone <this repo> && cd qsys-mic-relay
+git clone https://github.com/ShowSysDan/Pawblic-Address.git && cd Pawblic-Address
 python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -26,7 +31,7 @@ Phones only allow microphone access over HTTPS, so make a self-signed certificat
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout key.pem -out cert.pem -subj "/CN=mic-relay"
+  -keyout key.pem -out cert.pem -subj "/CN=pawblic-address"
 ```
 
 (`mkcert` gives you a cert the phone trusts without a warning, if you'd rather.)
@@ -94,12 +99,14 @@ Things already done for you, don't undo them:
 ## Layout
 
 ```
-app.py                  Flask routes + WebSocket audio ingest
-relay.py                ffmpeg process per session (command building, start/write/stop)
-settings.py             settings.json load/save/validate
-templates/index.html    the page
-static/app.js           mic capture, WebSocket, settings UI
-static/pcm-worklet.js   AudioWorklet: Float32 → Int16 PCM chunks
+app.py                       Flask routes + WebSocket audio ingest
+relay.py                     ffmpeg process per session (command building, start/write/stop)
+settings.py                  settings.json load/save/validate
+templates/index.html         the page
+static/app.js                mic capture, WebSocket, settings UI
+static/pcm-worklet.js        AudioWorklet: Float32 → Int16 PCM chunks
+static/logo.svg              logo (also the favicon)
+static/apple-touch-icon.png  home-screen icon for phones
 ```
 
 ## Next
