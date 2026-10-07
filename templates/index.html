@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#232a33">
+<title>Mic relay</title>
+<style>
+  :root {
+    --bg: #232a33;
+    --surface: #2e3742;
+    --line: #3c4752;
+    --text: #eef1f4;
+    --muted: #96a1ad;
+    --ring: #4e5a67;
+    --live: #e8322c;
+    --live-glow: rgba(232, 50, 44, .45);
+    --focus: #8fb7ff;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  main {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 28px 24px 48px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  .lede { margin: 0; color: var(--muted); }
+
+  /* The tally light. */
+  .tally {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 0 40px;
+  }
+  #liveBtn {
+    width: 188px;
+    height: 188px;
+    border-radius: 50%;
+    border: 4px solid var(--ring);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 24px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color .25s, border-color .25s, box-shadow .25s, transform .1s;
+  }
+  #liveBtn:active { transform: scale(.97); }
+  #liveBtn:disabled { opacity: .55; cursor: default; }
+  #liveBtn:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; }
+  body.live #liveBtn {
+    background: var(--live);
+    border-color: #ff6a64;
+    color: #fff;
+    box-shadow: 0 0 0 12px var(--live-glow), 0 0 48px var(--live-glow);
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { box-shadow: 0 0 0 12px var(--live-glow), 0 0 48px var(--live-glow); }
+    50%      { box-shadow: 0 0 0 16px var(--live-glow), 0 0 72px var(--live-glow); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body.live #liveBtn { animation: none; }
+  }
+  #status {
+    margin-top: 20px;
+    min-height: 3em;
+    text-align: center;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  #status[data-kind="live"]  { color: var(--text); }
+  #status[data-kind="error"] { color: #ffb4b0; }
+
+  /* Destination settings. */
+  section { border-top: 1px solid var(--line); padding-top: 20px; }
+  h2 { font-size: 17px; font-weight: 600; margin: 0 0 14px; }
+  .row {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .row[hidden] { display: none; }
+  label { color: var(--muted); }
+  input, select {
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+  }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
+  #saveBtn {
+    min-height: 44px;
+    padding: 0 18px;
+    border: 1px solid var(--ring);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #saveBtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  #saveNote { color: var(--muted); }
+  #saveNote[data-kind="error"] { color: #ffb4b0; }
+  .hint { margin: 18px 0 0; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mic relay</h1>
+  <p class="lede">Streams this phone's microphone to the Q-SYS Core.</p>
+
+  <div class="tally">
+    <button id="liveBtn" type="button" aria-pressed="false">Go live</button>
+    <div id="status" aria-live="polite">Ready</div>
+  </div>
+
+  <section aria-labelledby="dest">
+    <h2 id="dest">Destination</h2>
+    <div class="row">
+      <label for="ip">Core IP</label>
+      <input id="ip" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.100">
+    </div>
+    <div class="row">
+      <label for="port">Port</label>
+      <input id="port" inputmode="numeric" autocomplete="off" placeholder="4848">
+    </div>
+    <div class="row">
+      <label for="codec">Codec</label>
+      <select id="codec">
+        <option value="pcm">PCM, lowest latency</option>
+        <option value="mp3">MP3, mono</option>
+      </select>
+    </div>
+    <div class="row" id="bitrateRow">
+      <label for="bitrate">Bitrate</label>
+      <select id="bitrate">
+        <option value="64">64 kbps</option>
+        <option value="96">96 kbps</option>
+        <option value="128">128 kbps</option>
+        <option value="192">192 kbps</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button id="saveBtn" type="button">Save changes</button>
+      <span id="saveNote" aria-live="polite"></span>
+    </div>
+    <p class="hint">On the Core, set the Media Stream Receiver's stream to <code>rtp://:PORT</code> with the same port.</p>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

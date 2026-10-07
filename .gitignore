@@ -1,0 +1,5 @@
+__pycache__/
+.venv/
+settings.json
+cert.pem
+key.pem
