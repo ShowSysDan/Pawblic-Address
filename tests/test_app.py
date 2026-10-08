@@ -566,3 +566,35 @@ def test_a_stalled_handshake_is_dropped(https_server):
     with socket.create_connection(("127.0.0.1", port)) as s:
         s.settimeout(5)
         assert s.recv(1) == b""  # closed by the server after HANDSHAKE_TIMEOUT_S
+
+
+def plain_get(port, head):
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as s:
+        s.sendall(head)
+        data = b""
+        while chunk := s.recv(4096):
+            data += chunk
+    return data.decode("latin-1")
+
+
+def test_plain_http_is_redirected_to_https(https_server):
+    port, client = https_server
+    reply = plain_get(port, f"GET /?x=1 HTTP/1.1\r\nHost: 10.0.0.5:{port}\r\n\r\n".encode())
+    assert reply.startswith("HTTP/1.1 307")
+    assert f"\r\nLocation: https://10.0.0.5:{port}/?x=1\r\n" in reply
+    assert https_get(port, client).startswith(b"HTTP/1.1 200")  # HTTPS still works
+
+
+@pytest.mark.parametrize("head, location", [
+    (b"GET / HTTP/1.1\r\nHost: a b\r\n\r\n", "https://127.0.0.1:{port}/"),
+    (b"GET / HTTP/1.1\r\nHost: x\r\n\tLocation: y\r\n\r\n", "https://x/"),
+    (b"GET / HTTP/1.1\r\nHost: x\rSet-Cookie: y\r\n\r\n", "https://127.0.0.1:{port}/"),
+    (b"GET //evil.example/ HTTP/1.1\r\n\r\n", "https://127.0.0.1:{port}//evil.example/"),
+    (b"GET http://evil.example/ HTTP/1.1\r\n\r\n", "https://127.0.0.1:{port}/"),
+    (b"GET /\r\nSet-Cookie:x HTTP/1.1\r\n\r\n", "https://127.0.0.1:{port}/"),
+])
+def test_redirect_cannot_be_steered_or_add_headers(https_server, head, location):
+    port, _ = https_server
+    reply = plain_get(port, head)
+    assert re.findall(r"\r\nLocation: ([^\r\n]*)\r\n", reply) == [location.format(port=port)]
+    assert "Set-Cookie" not in reply and "\nLocation: y" not in reply

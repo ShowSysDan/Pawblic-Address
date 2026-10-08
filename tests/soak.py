@@ -127,7 +127,7 @@ class Server:
         self.base = None
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and self.base is None:
-            for scheme in ("http", "https"):
+            for scheme in ("https", "http"):  # http:// redirects once HTTPS is on
                 try:
                     url = f"{scheme}://127.0.0.1:{self.port}"
                     urllib.request.urlopen(url + "/api/health", timeout=1, context=_TLS)

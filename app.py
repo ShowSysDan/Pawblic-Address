@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import signal
 import socket
 import ssl
@@ -40,6 +41,7 @@ SILENT_TIMEOUT_S = 10          # nothing at all from a phone for this long: it's
 POLL_S = 0.5                   # how often a connection wakes up when nothing is arriving
 CLOSE_GRACE_S = 1.0            # how long a phone gets to acknowledge a WebSocket close
 HANDSHAKE_TIMEOUT_S = 10       # a connection gets this long to finish its TLS handshake
+TLS_HANDSHAKE = 0x16           # first byte of every TLS connection; anything else is plain HTTP
 MAX_MESSAGE_BYTES = 64 * 1024  # one 10.7 ms audio chunk is 1 KB
 STREAM_KEYS = ("ip", "port", "codec", "bitrate")  # settings the stream is built from
 
@@ -413,6 +415,7 @@ class _Server(ThreadedWSGIServer):
     connection and then goes quiet (asleep, out of Wi-Fi, sitting on the certificate
     warning) stops the page loading for everyone until it goes away. Here the listening
     socket stays plain and the handshake runs in the connection's own thread, with a limit.
+    That also lets plain http:// on the same port be redirected to https://.
     """
 
     def __init__(self, host: str, port: int, wsgi_app, ssl_context: ssl.SSLContext | None):
@@ -424,9 +427,15 @@ class _Server(ThreadedWSGIServer):
             return super().finish_request(request, client_address)
         try:
             request.settimeout(HANDSHAKE_TIMEOUT_S)
+            first = request.recv(1, socket.MSG_PEEK)
+            if not first:
+                return
+            if first[0] != TLS_HANDSHAKE:
+                _redirect_to_https(request)
+                return
             conn = self.ssl_context.wrap_socket(request, server_side=True)
         except (OSError, ValueError):
-            return  # not TLS, the certificate was refused, or it went quiet: drop it
+            return  # the certificate was refused, or it went quiet: drop it
         try:
             conn.settimeout(None)
             super().finish_request(conn, client_address)
@@ -436,6 +445,40 @@ class _Server(ThreadedWSGIServer):
             except OSError:
                 pass
             conn.close()
+
+
+_HOST = re.compile(r"[A-Za-z0-9.\-]+(:[0-9]{1,5})?|\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?")
+_PATH = re.compile(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/?\-]*")
+
+
+def _redirect_to_https(sock: socket.socket):
+    """Someone typed the address without https://: send them to the same URL over HTTPS.
+
+    Only the Host header and path from the request are used, and both are checked, so
+    the reply can't be steered anywhere but this server's own address.
+    """
+    head = b""
+    while b"\r\n\r\n" not in head and len(head) < 8192:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return
+        head += chunk
+    lines = head.split(b"\r\n")
+    parts = lines[0].decode("latin-1").split(" ")
+    path = parts[1] if len(parts) == 3 and _PATH.fullmatch(parts[1]) else "/"
+    host = ""
+    for line in lines[1:]:
+        name, _, value = line.decode("latin-1").partition(":")
+        if name.strip().lower() == "host":
+            host = value.strip()
+    if not _HOST.fullmatch(host):
+        ip, port = sock.getsockname()[:2]
+        host = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+    body = b"This page needs HTTPS.\n"
+    sock.sendall(f"HTTP/1.1 307 Temporary Redirect\r\n"
+                 f"Location: https://{host}{path}\r\n"
+                 f"Content-Type: text/plain\r\nContent-Length: {len(body)}\r\n"
+                 f"Cache-Control: no-store\r\nConnection: close\r\n\r\n".encode() + body)
 
 
 def _tls_context(cert: str, key: str) -> ssl.SSLContext:
