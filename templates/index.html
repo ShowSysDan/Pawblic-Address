@@ -57,8 +57,9 @@
   /* Is the Python backend answering? */
   .conn {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 4px 8px;
     margin-top: 18px;
     min-height: 32px;
     font-size: 14px;
@@ -113,6 +114,20 @@
     transition: background-color .25s, border-color .25s, box-shadow .25s, transform .1s;
   }
   #liveBtn:active { transform: scale(.97); }
+  /* Holding the button mustn't select text or open the long-press menu. */
+  #liveBtn { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .meter {
+    width: 188px;
+    height: 8px;
+    margin-top: 20px;
+    border-radius: 4px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .meter span { display: block; height: 100%; width: 0; background: var(--ok); transition: width 50ms linear; }
+  .meter[data-level="hot"] span { background: var(--brand); }
+  .meter[data-level="clip"] span { background: var(--live); }
+  .meter[hidden] { display: none; }
   #liveBtn:disabled { opacity: .55; cursor: default; }
   #liveBtn:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; }
   body.live #liveBtn {
@@ -130,7 +145,7 @@
     body.live #liveBtn { animation: none; }
   }
   #status {
-    margin-top: 20px;
+    margin-top: 14px;
     min-height: 3em;
     text-align: center;
     color: var(--muted);
@@ -138,6 +153,52 @@
   }
   #status[data-kind="live"]  { color: var(--text); }
   #status[data-kind="error"] { color: var(--error-text); }
+  #connRtt { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #connRtt:not(:empty)::before { content: "· "; }
+  .conn[data-state="warn"] #connRtt { color: var(--brand); }
+
+  .tabs { display: flex; gap: 4px; margin-top: 14px; border-bottom: 1px solid var(--line); }
+  .tabs button {
+    flex: 1;
+    min-height: 44px;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--brand); }
+  .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  [role="tabpanel"][hidden] { display: none; }
+  #panelSettings { padding-top: 20px; }
+  #panelSettings section:first-child { border-top: 0; padding-top: 0; }
+  button.link {
+    margin-top: 6px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 14px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  button.link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .toggle {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 15px;
+    cursor: pointer;
+  }
+  .toggle input { width: 20px; height: 20px; min-height: 0; margin: 0; accent-color: var(--brand); }
 
   /* Destination settings. */
   section { border-top: 1px solid var(--line); padding-top: 20px; }
@@ -178,7 +239,8 @@
   }
   .actions button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   .actions button:disabled { opacity: .55; cursor: default; }
-  #saveNote { margin: 10px 0 0; min-height: 1.5em; color: var(--muted); }
+  #saveNote { margin: 10px 0 0; min-height: 1.5em; color: var(--muted); transition: opacity .6s; }
+  #saveNote.fade { opacity: 0; }
   #saveNote[data-kind="error"] { color: var(--error-text); }
   .hint { margin: 18px 0 0; color: var(--muted); font-size: 14px; }
   footer {
@@ -198,20 +260,35 @@
     <img src="/static/logo.svg" alt="">
     <div>
       <h1><span>Paw</span>blic Address</h1>
-      <p class="lede">Streams this phone's microphone to the Q-SYS Core.</p>
+      <p class="lede">A paging mic for the Q-SYS Core.</p>
     </div>
   </header>
 
   <div class="conn" id="conn" data-state="checking" role="status" aria-live="polite">
     <span class="dot" aria-hidden="true"></span>
     <span id="connText">Checking the server…</span>
+    <span id="connRtt"></span>
     <button id="reloadBtn" type="button" hidden>Reload</button>
   </div>
 
+  <div class="tabs" role="tablist" aria-label="Pawblic Address">
+    <button id="tabTalk" role="tab" type="button" aria-selected="true" aria-controls="panelTalk">Talk</button>
+    <button id="tabSettings" role="tab" type="button" aria-selected="false" aria-controls="panelSettings" tabindex="-1">Settings</button>
+  </div>
+
+  <div id="panelTalk" role="tabpanel" aria-labelledby="tabTalk">
+
   <div class="tally">
     <button id="liveBtn" type="button" aria-pressed="false">Go live</button>
+    <div id="meter" class="meter" role="img" aria-label="Microphone level" hidden><span></span></div>
     <div id="status" aria-live="polite">Ready</div>
+    <label class="toggle"><input id="holdToTalk" type="checkbox"> Hold to talk (or hold the space bar)</label>
+    <label class="toggle"><input id="sidetone" type="checkbox"> Hear yourself while live (headphones only)</label>
+    <button id="releaseBtn" class="link" type="button" hidden>Release the mic</button>
   </div>
+  </div>
+
+  <div id="panelSettings" role="tabpanel" aria-labelledby="tabSettings" hidden>
 
   <section aria-labelledby="dest">
     <h2 id="dest">Destination</h2>
@@ -242,6 +319,22 @@
     <p class="hint">On the Core, set the Media Stream Receiver's stream to <code>rtp://:PORT</code> with the same port.</p>
   </section>
 
+  <section aria-labelledby="safety">
+    <h2 id="safety">Safety</h2>
+    <div class="row">
+      <label for="max_talk_min">Max talk</label>
+      <select id="max_talk_min">
+        <option value="1">1 minute</option>
+        <option value="2">2 minutes</option>
+        <option value="5">5 minutes</option>
+        <option value="10">10 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="0">No limit</option>
+      </select>
+    </div>
+    <p class="hint">A phone left live (in a pocket, say) is muted after this long. The talker can go live again straight away.</p>
+  </section>
+
   <section aria-labelledby="syslog">
     <h2 id="syslog">Syslog</h2>
     <div class="row">
@@ -260,6 +353,7 @@
     <button id="testBtn" type="button">Send syslog test</button>
   </div>
   <p id="saveNote" aria-live="polite"></p>
+  </div>
 
   <footer>Pawblic Address v{{ version }}</footer>
 </main>

@@ -5,10 +5,11 @@
     python tests/soak.py --cycles 1000 --long 600
 
 Starts app.py as a separate process, drives pages through it in every way a page can
-end (Stop, tab closed, Wi-Fi drop, silence, bad hello, oversized message, a second
-phone), and samples the server's memory, threads, open files and ffmpeg children as
-it goes. Then checks SIGTERM and SIGKILL during a live page leave no ffmpeg behind.
-Exits non-zero if anything leaked.
+end (Mute, tab closed, Wi-Fi drop, silence, bad hello, oversized message, a second
+phone, mute and talk again on one connection), and samples the server's memory,
+threads, open files and ffmpeg children as it goes. Checks the stream to the Core runs
+the whole time, at real-time rate, as one ffmpeg. Then checks SIGTERM and SIGKILL
+during a live page leave no ffmpeg behind. Exits non-zero if anything leaked.
 """
 
 import argparse
@@ -27,8 +28,13 @@ import urllib.request
 import simple_websocket
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHUNK = b"\0\0" * 960  # 20 ms of 48 kHz mono s16le
+CHUNK = b"\0\0" * 512  # 10.7 ms of 48 kHz mono s16le
+CHUNK_S = 512 / 48000
 IDLE_TIMEOUT_S = 5     # app.IDLE_TIMEOUT_S
+SILENT_TIMEOUT_S = 10  # app.SILENT_TIMEOUT_S
+# L16 stereo at 44.1 kHz, plus a 12-byte RTP header on each of the 3 packets ffmpeg
+# makes from every 1024-sample input packet.
+RTP_BYTES_PER_S = 44100 * 4 + 3 * 12 * 48000 // 1024
 RSS_GROWTH_LIMIT_KB = 4096
 
 _TLS = ssl.create_default_context()
@@ -45,6 +51,7 @@ class UDPSink:
         self.sock.settimeout(0.2)
         self.port = self.sock.getsockname()[1]
         self.packets = 0
+        self.bytes = 0
         self.texts = []
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -57,6 +64,7 @@ class UDPSink:
             except OSError:
                 return
             self.packets += 1
+            self.bytes += len(data)
             if data[:1] == b"<":
                 self.texts.append(data.decode("utf-8", "replace"))
 
@@ -143,22 +151,39 @@ class Server:
     def connect(self):
         return simple_websocket.Client.connect(self.ws_url, ssl_context=_TLS)
 
-    def go_live(self):
+    def ready(self):
         ws = self.connect()
-        ws.send(json.dumps({"sampleRate": 48000}))
-        msg = json.loads(ws.receive(timeout=5))
-        if msg.get("type") != "live":
-            raise RuntimeError(f"not live: {msg}")
+        ws.send(json.dumps({"type": "hello", "sampleRate": 48000}))
+        expect(ws, "ready")
+        return ws
+
+    def go_live(self, ws=None):
+        ws = ws or self.ready()
+        ws.send(json.dumps({"type": "talk"}))
+        expect(ws, "live")
         return ws
 
     def wait_idle(self, timeout=8):
-        """Line free and no ffmpeg running. Returns seconds taken, or None on timeout."""
+        """Line free and just the stream's ffmpeg running. Seconds taken, or None on timeout."""
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
-            if not self.health()["live"] and not children(self.pid):
+            if not self.health()["live"] and len(children(self.pid)) == 1:
                 return time.monotonic() - t0
             time.sleep(0.02)
         return None
+
+
+def expect(ws, kind):
+    while True:
+        raw = ws.receive(timeout=5)
+        if raw is None:
+            raise RuntimeError(f"no {kind} from the server")
+        msg = json.loads(raw)
+        if msg.get("type") != "pong" or kind == "pong":
+            break
+    if msg.get("type") != kind:
+        raise RuntimeError(f"expected {kind}: {msg}")
+    return msg
 
 
 def drop(ws):
@@ -173,14 +198,30 @@ def close(ws, code=1000):
         pass
 
 
+def mute(ws):
+    ws.send(json.dumps({"type": "mute"}))
+    expect(ws, "muted")
+
+
 def scenario(srv, i):
     kind = i % 20
-    if kind <= 11:                       # normal page, Stop tapped
+    if kind <= 8:                        # normal page, Mute tapped, then mic released
         ws = srv.go_live()
         for _ in range(50):
             ws.send(CHUNK)
+        mute(ws)
         close(ws)
-        return "stop"
+        return "mute"
+    if kind <= 11:                       # several pages on one connection
+        ws = srv.go_live()
+        for _ in range(3):
+            for _ in range(10):
+                ws.send(CHUNK)
+            mute(ws)
+            srv.go_live(ws)
+        mute(ws)
+        close(ws)
+        return "mute-talk"
     if kind <= 14:                       # Wi-Fi drop mid-page
         ws = srv.go_live()
         for _ in range(25):
@@ -192,10 +233,16 @@ def scenario(srv, i):
         ws.send(CHUNK)
         close(ws, 1001)
         return "left"
-    if kind == 16:                       # garbage instead of hello
+    if kind == 16:                       # garbage instead of hello; and a latency test
         ws = srv.connect()
         ws.send(b"\xff" * 100)
         ws.receive(timeout=5)
+        p = simple_websocket.Client.connect(srv.ws_url.replace("/ws/audio", "/ws/ping"),
+                                            ssl_context=_TLS)
+        for t in range(5):
+            p.send(json.dumps({"type": "ping", "t": t}))
+            expect(p, "pong")
+        close(p)
         return "bad-hello"
     if kind == 17:                       # oversized message
         ws = srv.go_live()
@@ -204,15 +251,17 @@ def scenario(srv, i):
         return "oversize"
     if kind == 18:                       # second phone refused
         a = srv.go_live()
-        b = srv.connect()
-        b.receive(timeout=5)
+        b = srv.ready()
+        b.send(json.dumps({"type": "talk"}))
+        expect(b, "refused")
         close(b)
         close(a)
         return "busy"
     ws = srv.go_live()                   # real-time pace
     for _ in range(25):
         ws.send(CHUNK)
-        time.sleep(0.02)
+        time.sleep(CHUNK_S)
+    mute(ws)
     close(ws)
     return "realtime"
 
@@ -239,6 +288,7 @@ def main():
         srv.wait_idle()
     time.sleep(1.5)
     base = metrics(srv.pid)
+    pid0 = children(srv.pid)  # the stream's ffmpeg; it should run throughout
     print(f"{args.cycles} pages, mixed endings:")
     row("baseline", base)
 
@@ -262,9 +312,32 @@ def main():
         msg = ws.receive(timeout=IDLE_TIMEOUT_S + 5)
         took = srv.wait_idle()
         ended = time.monotonic() - t0
-        print(f"  ended after {ended:.1f} s: {json.loads(msg)['msg'] if msg else 'no message'}")
+        print(f"  muted after {ended:.1f} s: {json.loads(msg)['msg'] if msg else 'no message'}")
         if took is None or ended > IDLE_TIMEOUT_S + 3:
             problems.append("silent phone didn't end the page in time")
+        close(ws)
+
+    print("\nMuted phone that vanishes (no pings, no close):")
+    before = metrics(srv.pid)["threads"]
+    ws = srv.ready()
+    t0 = time.monotonic()
+    msg = ws.receive(timeout=SILENT_TIMEOUT_S + 5)
+    print(f"  dropped after {time.monotonic() - t0:.1f} s: "
+          f"{json.loads(msg)['msg'] if msg else 'no message'}")
+    if msg is None or time.monotonic() - t0 > SILENT_TIMEOUT_S + 3:
+        problems.append("vanished phone wasn't disconnected")
+    time.sleep(2)
+    if metrics(srv.pid)["threads"] > before:
+        problems.append("vanished phone left a thread behind")
+
+    print("\nThe stream while nobody talks (3 s):")
+    b0 = rtp.bytes
+    time.sleep(3)
+    rate = (rtp.bytes - b0) / 3
+    print(f"  {rate / 1000:.0f} KB/s of RTP to the fake Core (expect about "
+          f"{RTP_BYTES_PER_S / 1000:.0f}); ffmpeg {pid0}")
+    if abs(rate - RTP_BYTES_PER_S) > 0.1 * RTP_BYTES_PER_S:
+        problems.append(f"idle stream ran at {rate:.0f} B/s, not real time")
 
     if args.long:
         print(f"\nOne {args.long} s page at real-time pace:")
@@ -282,7 +355,8 @@ def main():
                 if m["ffmpeg"] != 1:
                     problems.append(f"{m['ffmpeg']} ffmpeg processes during one page")
                 next_sample += 10
-            time.sleep(max(0.0, t0 + sent * 0.02 - time.monotonic()))
+            time.sleep(max(0.0, t0 + sent * CHUNK_S - time.monotonic()))
+        mute(ws)
         close(ws)
         if srv.wait_idle() is None:
             problems.append("long page never ended")
@@ -293,8 +367,10 @@ def main():
     print("\nAfter everything, settled:")
     row("baseline", base)
     row("now", end, base)
-    if end["ffmpeg"]:
-        problems.append(f"{end['ffmpeg']} ffmpeg processes left running")
+    if end["ffmpeg"] != 1:
+        problems.append(f"{end['ffmpeg']} ffmpeg processes running, not the stream's one")
+    if children(srv.pid) != pid0:
+        problems.append("the stream's ffmpeg was restarted during the soak")
     if end["threads"] > base["threads"]:
         problems.append(f"threads grew {base['threads']} -> {end['threads']}")
     if end["fds"] > base["fds"]:
