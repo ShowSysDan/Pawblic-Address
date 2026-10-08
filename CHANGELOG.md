@@ -3,6 +3,15 @@
 Every change to Pawblic Address gets a new version number here and in `version.py`
 (see CLAUDE.md). Newest first.
 
+## [0.7.0] - 2026-10-08
+
+### Changed
+- Typing the server's address without `https://` (as `10.0.0.5:7100`, say) now works:
+  plain HTTP on the page's port gets a redirect to the same address over HTTPS, instead
+  of a page that fails to load. The redirect keeps the address that was typed and its
+  path (both checked, so it can't add headers), and isn't cached, so it stops if HTTPS is
+  turned off.
+
 ## [0.6.1] - 2026-10-08
 
 ### Fixed

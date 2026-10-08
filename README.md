@@ -66,7 +66,8 @@ To use a port other than 7100, run `PORT=8443 ./deploy/install-service.sh`.
 
 **4. Open the port if the server has a firewall**, e.g. `sudo ufw allow 7100/tcp`.
 
-**5. On a phone, open `https://<server-ip>:7100`.** Accept the certificate warning once,
+**5. On a phone, open `https://<server-ip>:7100`** (typing just `<server-ip>:7100` works too:
+plain `http://` on that port redirects to `https://`). Accept the certificate warning once,
 enter the Core's IP and port under **Destination**, tap **Save changes**, then **Go live**.
 (`mkcert` or an internal CA gives you a certificate phones trust without the warning;
 replace `cert.pem` and `key.pem` and restart.)
@@ -171,7 +172,7 @@ Settings (the Q-SYS destination and the syslog server) are set on the page and s
 
 | Variable        | Default        | Purpose                        |
 |-----------------|----------------|--------------------------------|
-| `PORT`          | `7100`         | HTTPS port for the web page    |
+| `PORT`          | `7100`         | HTTPS port for the web page (`http://` on it redirects) |
 | `FFMPEG_BIN`    | `ffmpeg`       | Path to the ffmpeg binary      |
 | `SETTINGS_FILE` | `settings.json`| Where settings are stored      |
 
@@ -331,7 +332,7 @@ What isn't yet, so plan around it:
 - **Red "Can't reach the server"** — the server isn't running, or the phone is on a network that can't reach it.
 - **"Server updated… Reload"** — the server was upgraded since the page was opened; tap Reload.
 - **No syslog messages** — use **Send syslog test**; check the server's firewall allows UDP out and the syslog server listens on UDP.
-- **"This page needs HTTPS"** — you opened `http://`, or `cert.pem`/`key.pem` are missing so the server fell back to plain HTTP.
+- **"This page needs HTTPS"** — `cert.pem`/`key.pem` are missing, so the server fell back to plain HTTP (with them, `http://` redirects to `https://` by itself).
 - **Microphone blocked** — check the site permission in the phone browser; on iOS also Settings → Safari → Microphone.
 - **Amber "Save a destination to start the stream"** — nothing is streamed until the Core's address has been saved once.
 - **Amber "the stream to the Core isn't running"** — ffmpeg keeps failing; `journalctl -u pawblic-address -e` shows why (`stream_error`).
