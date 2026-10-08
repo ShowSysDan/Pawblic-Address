@@ -1,11 +1,11 @@
-"""One ffmpeg process per page (streaming session).
+"""The ffmpeg process behind the stream to the Core (see stream.py, which owns it).
 
-Browser -> raw 16-bit mono PCM -> ffmpeg stdin -> MP3 (or L16) over RTP -> Q-SYS Core.
+48 kHz 16-bit mono PCM -> ffmpeg stdin -> MP3 (or L16) over RTP -> Q-SYS Core.
 
 Every ffmpeg process belongs to an FFmpegRelay and ends with stop(), which is safe to
 call twice and always finishes in bounded time. Nothing here blocks the caller: audio
 goes through a small queue to a writer thread, so a hung ffmpeg can't stall the
-WebSocket, and a watchdog stops any relay whose owner has stopped feeding it.
+stream's clock, and a watchdog stops any relay whose owner has stopped feeding it.
 """
 
 import collections
@@ -17,15 +17,22 @@ import subprocess
 import threading
 import time
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 import events
 
 log = logging.getLogger("pa.relay")
 
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 
-QUEUE_CHUNKS = 25     # audio waiting for ffmpeg (~0.5 s of 20 ms chunks); beyond this, drop
+SAMPLE_RATE = 48000   # what ffmpeg is fed: 16-bit mono at this rate, whoever is talking
+QUEUE_CHUNKS = 8      # audio waiting for ffmpeg (~85 ms of 10.7 ms ticks); beyond this, drop
+PIPE_BYTES = 4096     # shrink the stdin pipe from 64 KB (~0.7 s of audio) so it can't hold a backlog
 STALL_S = 2.0         # one write to ffmpeg blocked this long: ffmpeg is hung, give up
-REAP_AFTER_S = 15.0   # a live relay nobody has fed for this long has lost its owner
+REAP_AFTER_S = 5.0    # a live relay nobody has fed for this long has lost its owner
 REAP_EVERY_S = 1.0
 STOP_STEP_S = 1.0     # per step when stopping: flush, then terminate, then kill
 
@@ -43,7 +50,7 @@ def _mp3_frame_bytes(bitrate_kbps: int, sample_rate: int) -> int:
     return math.floor(144 * bitrate_kbps * 1000 / sample_rate) + 1
 
 
-def build_cmd(cfg: dict, sample_rate: int) -> list:
+def build_cmd(cfg: dict, sample_rate: int = SAMPLE_RATE) -> list:
     cmd = [
         FFMPEG_BIN, "-hide_banner", "-loglevel", "warning",
         # Raw PCM from the browser. The format is fully specified, so skip stream
@@ -77,7 +84,7 @@ def build_cmd(cfg: dict, sample_rate: int) -> list:
 
 
 class FFmpegRelay:
-    def __init__(self, cfg: dict, sample_rate: int):
+    def __init__(self, cfg: dict, sample_rate: int = SAMPLE_RATE):
         self.cfg = cfg
         self.sample_rate = sample_rate
         self.cmd = build_cmd(cfg, sample_rate)
@@ -102,6 +109,10 @@ class FFmpegRelay:
         return self.proc.pid if self.proc else None
 
     @property
+    def alive(self) -> bool:
+        return self.proc is not None and not self._stopped and self.proc.poll() is None
+
+    @property
     def returncode(self):
         return self.proc.returncode if self.proc else None
 
@@ -119,6 +130,12 @@ class FFmpegRelay:
             raise RelayError(f"ffmpeg not found (looked for '{FFMPEG_BIN}')")
         except OSError as e:
             raise RelayError(f"could not start ffmpeg ('{FFMPEG_BIN}'): {e}")
+        try:
+            # Linux only. If ffmpeg hiccups, audio should be dropped in write(), not pile
+            # up in a 64 KB pipe and play late. ffmpeg normally keeps the pipe empty.
+            fcntl.fcntl(self.proc.stdin.fileno(), fcntl.F_SETPIPE_SZ, PIPE_BYTES)
+        except (AttributeError, OSError):
+            pass
         self._writer = threading.Thread(target=self._pump_stdin, daemon=True,
                                         name=f"ffmpeg-{self.proc.pid}-stdin")
         self._reader = threading.Thread(target=self._pump_stderr, daemon=True,

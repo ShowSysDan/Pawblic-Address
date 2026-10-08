@@ -46,6 +46,7 @@ def test_good_hosts_are_accepted(ip, stored):
 @pytest.mark.parametrize("bad", [
     {"port": 0}, {"port": 70000}, {"port": "x"}, {"port": True}, {"port": None},
     {"bitrate": 31}, {"bitrate": 321}, {"codec": "opus"},
+    {"max_talk_min": 3}, {"max_talk_min": -1}, {"max_talk_min": 60},
     {"syslog_port": 0}, {"syslog_host": "not a host"},
 ])
 def test_bad_values_are_rejected(bad):
@@ -82,3 +83,9 @@ def test_bad_stored_values_fall_back_one_by_one(settings_file):
     assert cfg["ip"] == settings.DEFAULTS["ip"]
     assert cfg["codec"] == settings.DEFAULTS["codec"]
     assert cfg["port"] == 5000
+
+
+def test_max_talk_time_choices():
+    assert settings.load()["max_talk_min"] == 5
+    for n in settings.MAX_TALK_CHOICES:
+        assert settings.save({"max_talk_min": str(n)})[0]["max_talk_min"] == n

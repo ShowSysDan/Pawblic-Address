@@ -18,6 +18,7 @@ DEFAULTS = {
     "port": 4848,           # Port set on the Core's Media Stream Receiver (rtp://:4848)
     "codec": "pcm",         # "pcm" (L16 stereo, lowest latency) or "mp3" (mono MP3)
     "bitrate": 128,         # kbps, MP3 only
+    "max_talk_min": 5,      # a phone live this long is muted (one left live in a pocket); 0 = no limit
     "syslog_host": "",      # syslog server IP or hostname; empty turns syslog off
     "syslog_port": 514,     # syslog server UDP port
 }
@@ -61,11 +62,23 @@ def _codec(value) -> str:
     return codec
 
 
+MAX_TALK_CHOICES = (0, 1, 2, 5, 10, 30)
+
+
+def _max_talk(value) -> int:
+    n = _int(value, "Max talk time", 0, 30, " minutes")
+    if n not in MAX_TALK_CHOICES:
+        raise ValueError("Max talk time must be one of " + ", ".join(map(str, MAX_TALK_CHOICES))
+                         + " minutes (0 for no limit)")
+    return n
+
+
 VALIDATORS = {
     "ip": lambda v: _host(v, "Core IP"),
     "port": lambda v: _int(v, "Port", 1, 65535),
     "codec": _codec,
     "bitrate": lambda v: _int(v, "Bitrate", 32, 320, " kbps"),
+    "max_talk_min": _max_talk,
     "syslog_host": lambda v: _host(v, "Syslog server", allow_empty=True),
     "syslog_port": lambda v: _int(v, "Syslog port", 1, 65535),
 }
@@ -95,6 +108,18 @@ def load() -> dict:
             except ValueError as e:
                 log.warning("ignoring stored %s: %s", key, e)
     return cfg
+
+
+def is_configured() -> bool:
+    """True once a Core address has been saved. Until then nothing is streamed: the default
+    address is only a placeholder, and could be some other device on the network."""
+    with _lock:
+        data = _read()
+    try:
+        VALIDATORS["ip"](data["ip"])
+    except (KeyError, ValueError):
+        return False
+    return True
 
 
 def save(new: dict) -> tuple:
