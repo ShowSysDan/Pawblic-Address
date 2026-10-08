@@ -327,6 +327,7 @@ What isn't yet, so plan around it:
 ## Troubleshooting
 
 - **The service won't start, or the install script says it didn't answer**: run `journalctl -u pawblic-address -e` for the error. A port already in use is the usual one.
+- **The page loads slowly or not at all, for everyone at once** — fixed in 0.6.1: before that, one phone that opened a connection and went quiet (asleep, out of Wi-Fi, or sitting on the certificate warning) held up every other phone. Update. If it still happens, the server machine or network is the place to look.
 - **Red "Can't reach the server"** — the server isn't running, or the phone is on a network that can't reach it.
 - **"Server updated… Reload"** — the server was upgraded since the page was opened; tap Reload.
 - **No syslog messages** — use **Send syslog test**; check the server's firewall allows UDP out and the syslog server listens on UDP.

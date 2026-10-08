@@ -505,3 +505,64 @@ def test_no_threads_sockets_or_processes_leak(server):
     assert threads <= threads0, f"threads {threads0} -> {threads}"
     assert fds <= fds0, f"fds {fds0} -> {fds}"
     assert child_pids() == ffmpeg  # still the one stream ffmpeg
+
+
+# ---- HTTPS ------------------------------------------------------------------
+
+@pytest.fixture
+def https_server(tmp_path, monkeypatch):
+    import shutil
+    import ssl
+    import subprocess
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl not installed")
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                    "-keyout", str(key), "-out", str(cert), "-subj", "/CN=pa-test"],
+                   check=True, capture_output=True)
+    monkeypatch.setattr(pa, "HANDSHAKE_TIMEOUT_S", 1)
+    srv = pa._Server("127.0.0.1", 0, pa.app, pa._tls_context(str(cert), str(key)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    client = ssl.create_default_context()
+    client.check_hostname = False
+    client.verify_mode = ssl.CERT_NONE
+    yield srv.server_port, client
+    srv.shutdown()
+    srv.server_close()
+
+
+def https_get(port, client, path="/api/health", timeout=3):
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as raw:
+        with client.wrap_socket(raw, server_hostname="127.0.0.1") as s:
+            s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                      f"Connection: close\r\n\r\n".encode())
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+    return data
+
+
+def test_https_serves_the_page(https_server):
+    assert https_get(*https_server, path="/").startswith(b"HTTP/1.1 200")
+
+
+def test_a_stalled_connection_does_not_block_others(https_server):
+    # A phone that opens a connection and never says anything (asleep, out of Wi-Fi,
+    # sitting on the certificate warning) used to stop the page loading for everyone.
+    port, client = https_server
+    stalled = [socket.create_connection(("127.0.0.1", port)) for _ in range(3)]
+    try:
+        time.sleep(0.2)
+        start = time.monotonic()
+        assert https_get(port, client).startswith(b"HTTP/1.1 200")
+        assert time.monotonic() - start < 1
+    finally:
+        for s in stalled:
+            s.close()
+
+
+def test_a_stalled_handshake_is_dropped(https_server):
+    port, _ = https_server
+    with socket.create_connection(("127.0.0.1", port)) as s:
+        s.settimeout(5)
+        assert s.recv(1) == b""  # closed by the server after HANDSHAKE_TIMEOUT_S
