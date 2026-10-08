@@ -14,6 +14,7 @@ import math
 import os
 import signal
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -22,6 +23,7 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 from simple_websocket import ConnectionClosed
+from werkzeug.serving import ThreadedWSGIServer
 
 import events
 import relay
@@ -37,6 +39,7 @@ IDLE_TIMEOUT_S = 5             # live with no audio for this long: the phone is 
 SILENT_TIMEOUT_S = 10          # nothing at all from a phone for this long: it's gone (it pings every 2 s)
 POLL_S = 0.5                   # how often a connection wakes up when nothing is arriving
 CLOSE_GRACE_S = 1.0            # how long a phone gets to acknowledge a WebSocket close
+HANDSHAKE_TIMEOUT_S = 10       # a connection gets this long to finish its TLS handshake
 MAX_MESSAGE_BYTES = 64 * 1024  # one 10.7 ms audio chunk is 1 KB
 STREAM_KEYS = ("ip", "port", "codec", "bitrate")  # settings the stream is built from
 
@@ -402,10 +405,50 @@ class _NoHealthChecks(logging.Filter):
         return "/api/health" not in record.getMessage()
 
 
+class _Server(ThreadedWSGIServer):
+    """Werkzeug's threaded server, with each TLS handshake done in its connection's thread.
+
+    Werkzeug wraps the listening socket in TLS, so accept() does the handshake on the one
+    thread that accepts every connection, with no time limit. A single phone that opens a
+    connection and then goes quiet (asleep, out of Wi-Fi, sitting on the certificate
+    warning) stops the page loading for everyone until it goes away. Here the listening
+    socket stays plain and the handshake runs in the connection's own thread, with a limit.
+    """
+
+    def __init__(self, host: str, port: int, wsgi_app, ssl_context: ssl.SSLContext | None):
+        super().__init__(host, port, wsgi_app)
+        self.ssl_context = ssl_context  # Werkzeug reads it for the https:// scheme
+
+    def finish_request(self, request, client_address):
+        if self.ssl_context is None:
+            return super().finish_request(request, client_address)
+        try:
+            request.settimeout(HANDSHAKE_TIMEOUT_S)
+            conn = self.ssl_context.wrap_socket(request, server_side=True)
+        except (OSError, ValueError):
+            return  # not TLS, the certificate was refused, or it went quiet: drop it
+        try:
+            conn.settimeout(None)
+            super().finish_request(conn, client_address)
+        finally:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
+
+
+def _tls_context(cert: str, key: str) -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    return ctx
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     cert, key = os.path.join(here, "cert.pem"), os.path.join(here, "key.pem")
-    ssl_context = (cert, key) if os.path.exists(cert) and os.path.exists(key) else None
+    ssl_context = (_tls_context(cert, key)
+                   if os.path.exists(cert) and os.path.exists(key) else None)
     if ssl_context is None:
         log.warning("cert.pem/key.pem not found: serving plain HTTP. Phones will NOT "
                     "allow mic access over http. See README for a one-line cert.")
@@ -424,7 +467,9 @@ def main():
     if not settings.is_configured():
         log.warning("no destination saved yet: the stream to the Core starts once one is")
 
-    app.run(host="0.0.0.0", port=port, ssl_context=ssl_context, threaded=True, debug=False)
+    server = _Server("0.0.0.0", port, app, ssl_context)
+    log.info("serving on %s://0.0.0.0:%d", "https" if ssl_context else "http", port)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

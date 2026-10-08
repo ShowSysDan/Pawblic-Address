@@ -3,6 +3,15 @@
 Every change to Pawblic Address gets a new version number here and in `version.py`
 (see CLAUDE.md). Newest first.
 
+## [0.6.1] - 2026-10-08
+
+### Fixed
+- The page could load slowly or not at all, for every phone at once. Werkzeug did each
+  HTTPS handshake on the single thread that accepts connections, with no time limit, so
+  one phone that opened a connection and went quiet (asleep, out of Wi-Fi, or showing the
+  certificate warning) held up everyone else until it went away. Handshakes now run in
+  each connection's own thread and are dropped after 10 s.
+
 ## [0.6.0] - 2026-10-08
 
 ### Changed
