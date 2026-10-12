@@ -1,6 +1,6 @@
 // Runs on the audio thread. Turns the mic into 48 kHz 16-bit mono PCM and posts it to the
-// main thread in chunks of CHUNK samples, but only while sending is on (live). Muted, it
-// produces no audio at all. Live or muted, it posts the mic's peak level ({peak}) about
+// main thread in chunks of CHUNK samples, but only while sending is on (live or recording). Off,
+// it produces no audio at all. Either way, it posts the mic's peak level ({peak}) about
 // 20 times a second for the meter.
 
 const OUT_RATE = 48000; // what the server takes

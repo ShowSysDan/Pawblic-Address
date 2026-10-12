@@ -1,7 +1,9 @@
 """Pawblic Address (PA): phone mic -> Flask -> ffmpeg -> Q-SYS Media Stream Receiver.
 
-The stream to the Core runs all the time (stream.py). Phones connect once, keep the mic
-open while the page is showing, and the button just takes or gives up the talk floor.
+The stream to the Core runs all the time (stream.py). Mostly, a phone records an
+announcement, the talker checks it, and it's uploaded whole and played into the stream.
+For live paging, a phone connects once, keeps the mic open while the page is showing, and
+the button just takes or gives up the talk floor.
 
 Run:  python app.py
 Open: https://<this-machine-ip>:7100 on the phone (HTTPS is required for mic access).
@@ -24,6 +26,7 @@ from urllib.parse import urlsplit
 from flask import Flask, jsonify, render_template, request
 from flask_sock import Sock
 from simple_websocket import ConnectionClosed
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.serving import ThreadedWSGIServer
 
 import events
@@ -44,6 +47,8 @@ HANDSHAKE_TIMEOUT_S = 10       # a connection gets this long to finish its TLS h
 TLS_HANDSHAKE = 0x16           # first byte of every TLS connection; anything else is plain HTTP
 MAX_MESSAGE_BYTES = 64 * 1024  # one 10.7 ms audio chunk is 1 KB
 STREAM_KEYS = ("ip", "port", "codec", "bitrate")  # settings the stream is built from
+PCM_BYTES_PER_S = 2 * stream.RATE                 # 48 kHz 16-bit mono
+MAX_ANNOUNCE_BYTES = stream.MAX_ANNOUNCE_S * PCM_BYTES_PER_S
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'; "
@@ -90,6 +95,8 @@ class _Page:
             if _page is self:
                 _page = None
             dropped, gaps = _stream.buffer.close(self.token)
+            # Queued announcements play once what's left of this talk has played out.
+            _stream.announcements.release()
         per_s = 2 * stream.RATE  # 16-bit mono
         events.emit("page_stop", client=self.client, reason=reason,
                     duration_s=round(time.monotonic() - self.started, 1),
@@ -130,7 +137,8 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return jsonify(ok=True, version=VERSION, live=_page is not None, stream=_stream.state())
+    return jsonify(ok=True, version=VERSION, live=_page is not None, stream=_stream.state(),
+                   announcements=len(_stream.announcements))
 
 
 @app.get("/api/settings")
@@ -176,6 +184,59 @@ def syslog_test():
                              "Check the server and save."), 400
     events.emit("syslog_test", client=request.remote_addr, version=VERSION)
     return jsonify(sent_to=target)
+
+
+def _refuse_announce(client: str, status: int, reason: str, msg: str):
+    events.emit("announce_rejected", level=logging.WARNING, client=client, reason=reason,
+                origin=request.headers.get("Origin"))
+    return jsonify(error=msg), status
+
+
+@app.post("/api/announce")
+def announce():
+    """A recorded announcement: the body is 48 kHz s16le mono PCM, played whole, in turn."""
+    client = request.remote_addr
+    if not _same_origin():
+        return _refuse_announce(client, 403, "request from another site",
+                                "Refused: request came from another site")
+    if request.mimetype != "application/octet-stream":
+        # Other sites can't send this type without the server agreeing to it first.
+        return _refuse_announce(client, 415, "wrong content type",
+                                "Send the recording as application/octet-stream")
+    if not settings.is_configured():
+        return _refuse_announce(client, 409, "no destination saved",
+                                "Set the Core's IP under Destination and save first.")
+    if _stream.state() != "up":
+        return _refuse_announce(client, 503, "stream not running",
+                                "The stream to the Core isn't running. See the server log.")
+    request.max_content_length = MAX_ANNOUNCE_BYTES
+    try:
+        pcm = request.get_data(cache=False)
+    except RequestEntityTooLarge:
+        return _refuse_announce(client, 413, "too long", f"Recordings can be at most "
+                                f"{stream.MAX_ANNOUNCE_S // 60} minutes.")
+    if len(pcm) < stream.MIN_ANNOUNCE_S * PCM_BYTES_PER_S:
+        return _refuse_announce(client, 400, "too short", "That recording is too short.")
+    try:
+        a, ahead = _stream.announcements.add(client, pcm)
+    except stream.QueueFull:
+        return _refuse_announce(client, 429, "queue full", "Too many announcements are "
+                                "waiting to play. Try again in a moment.")
+    return jsonify(id=a.id, audio_s=a.audio_s, ahead=ahead, live=_page is not None)
+
+
+@app.get("/api/announce")
+def announce_status():
+    return jsonify(**_stream.announcements.status(), live=_page is not None)
+
+
+@app.post("/api/announce/stop")
+def announce_stop():
+    """Stop the announcement playing now and drop any waiting (a wrong one went out)."""
+    if not _same_origin():
+        return _refuse_announce(request.remote_addr, 403, "request from another site",
+                                "Refused: request came from another site")
+    return jsonify(stopped=_stream.announcements.stop_all("stopped", by=request.remote_addr))
 
 
 def _send(ws, **msg):
@@ -291,11 +352,16 @@ def _take_floor(ws, client: str, user_agent: str):
     limit_s = settings.load()["max_talk_min"] * 60
     with _floor_lock:
         live = _page
-        if live is None:
+        playing = live is None and not _stream.announcements.hold()
+        if live is None and not playing:
             page = _page = _Page(client, limit_s)
     if live is not None:
         events.emit("page_busy", level=logging.WARNING, client=client, live_client=live.client)
         _send(ws, type="refused", msg="Another phone is live. Try again when it mutes.")
+        return None
+    if playing:
+        events.emit("page_busy", level=logging.WARNING, client=client, live_client="announcement")
+        _send(ws, type="refused", msg="An announcement is playing. Try again when it ends.")
         return None
     cfg = _stream.cfg or settings.load()
     events.emit("page_start", client=client, codec=cfg["codec"],
@@ -395,6 +461,7 @@ def _on_exit():
     page = _page
     if page:
         page.end("shutdown")
+    _stream.announcements.stop_all("shutdown")
     _stream.stop()
     relay.stop_all()  # belt and braces: the feeder stops its ffmpeg in a finally
     events.emit("service_stop", version=VERSION,
@@ -402,9 +469,11 @@ def _on_exit():
 
 
 class _NoHealthChecks(logging.Filter):
-    # The page polls /api/health every few seconds; keep it out of the access log.
+    # The page polls /api/health every few seconds, and /api/announce twice a second while
+    # an announcement it sent is playing; keep them out of the access log.
     def filter(self, record):
-        return "/api/health" not in record.getMessage()
+        msg = record.getMessage()
+        return "/api/health" not in msg and "GET /api/announce " not in msg
 
 
 class _Server(ThreadedWSGIServer):

@@ -220,3 +220,72 @@ def test_a_hung_ffmpeg_is_replaced(core, syslog, monkeypatch):
     finally:
         s.stop()
     assert child_pids() == []
+
+
+# ---- recorded announcements -----------------------------------------------------
+
+def test_an_announcement_plays_whole_then_silence(syslog):
+    q = stream.Announcements()
+    a, ahead = q.add("10.0.0.5", tone(TICK * 2 + 100, 0x33))
+    assert ahead == 0
+    assert q.take() == tone(TICK, 0x33)
+    assert q.take() == tone(TICK, 0x33)
+    assert q.take() == tone(100, 0x33) + stream.SILENCE[100:]   # the end, padded
+    assert q.take() is None
+    assert q.status()["finished"] == {str(a.id): "played"}
+    assert "reason=played" in syslog.wait_for("announce_stop")
+
+
+def test_announcements_play_in_order_and_the_queue_is_capped():
+    q = stream.Announcements(max_queued=2)
+    q.add("a", tone(TICK, 1))
+    assert q.add("b", tone(TICK, 2))[1] == 1
+    with pytest.raises(stream.QueueFull):
+        q.add("c", tone(TICK, 3))
+    assert q.take() == tone(TICK, 1)
+    assert q.take() == tone(TICK, 2)
+
+
+def test_a_live_phone_holds_back_the_next_announcement_but_cannot_cut_into_one():
+    q = stream.Announcements()
+    assert q.hold()
+    q.add("a", tone(TICK * 2, 1))
+    assert q.take() is None              # waiting for the live phone
+    q.release()
+    assert q.take() == tone(TICK, 1)
+    assert not q.hold()                  # playing: the phone is refused
+
+
+def test_stopping_drops_the_playing_and_waiting_announcements(syslog):
+    q = stream.Announcements()
+    q.add("a", tone(TICK * 4))
+    q.add("b", tone(TICK * 4))
+    q.take()
+    assert q.stop_all("stopped", by="10.0.0.9") == 2
+    assert q.take() is None and len(q) == 0
+    assert set(q.status()["finished"].values()) == {"stopped"}
+    assert "by=10.0.0.9" in syslog.wait_for("announce_stop")
+
+
+def test_the_live_phone_comes_before_announcements():
+    s = stream.Stream()
+    s.announcements.add("a", tone(TICK * 4, 0x44))
+    t = s.buffer.open()
+    s.buffer.push(t, tone(ms(40), 0x22))
+    ticks = [s.next_tick()]
+    assert ticks[0] == tone(TICK, 0x22)
+    s.buffer.close(t)
+    ticks += [s.next_tick() for _ in range(8)]
+    assert b"".join(ticks).count(b"\x22") == ms(40)
+    assert b"".join(ticks).count(b"\x44") == TICK * 4   # then the announcement, whole
+
+
+def test_an_announcement_reaches_the_core(core):
+    s = stream.Stream().start()
+    try:
+        wait_for(lambda: s.state() == "up")
+        s.announcements.add("a", tone(ms(200), 0x55))
+        got = core.collect(0.6)
+        assert got.count(b"\x55") == ms(200)
+    finally:
+        s.stop()

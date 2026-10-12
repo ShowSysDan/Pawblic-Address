@@ -4,19 +4,24 @@
 
 <p align="center"><b>PA</b> — turn any phone's web browser into a paging mic for a Q-SYS system.</p>
 
-Pawblic Address streams a phone's microphone to a Q-SYS Core with as little delay as practical.
-Open the page, tap **Go live**, talk, tap **Mute**.
+Pawblic Address puts a phone's announcements on a Q-SYS system. The usual way is
+**record, then play**: open the page, tap **Record**, say the announcement, tap **Stop**,
+**Listen** to check it, then **Play on the PA**. The server plays the whole recording into
+the stream to the Core, so what the room hears has no network delay or dropouts in it, and
+nothing goes out until the talker is happy with it. For talking live, the **Live** tab still
+streams the mic with as little delay as practical.
 
 ```
-Phone browser ──raw PCM over WebSocket──▶ Flask ──jitter buffer──▶ ffmpeg ──L16 (or MP3) over RTP──▶ Q-SYS Media Stream Receiver
-                                                 (server clock, always on; silence when nobody talks)
+Announce:  Phone records ──whole recording over HTTPS──▶ Flask ──queue──┐
+Live:      Phone mic ──raw PCM over WebSocket──▶ Flask ──jitter buffer──┴─▶ ffmpeg ──L16 (or MP3) over RTP──▶ Q-SYS Media Stream Receiver
+                                                    (server clock, always on; silence when nothing plays)
 ```
 
-The stream to the Core runs all the time, so going live never waits for ffmpeg to start or
-for the Core to lock on to a new stream. The phone's button only decides whose audio goes
-into it.
+The stream to the Core runs all the time, so neither a recording nor going live waits for
+ffmpeg to start or for the Core to lock on to a new stream. The server only decides what
+goes into it: the live phone, else the announcement playing, else silence.
 
-Proof of concept: one page, one button, one destination. The version is in the page footer;
+Proof of concept: one page, one destination. The version is in the page footer;
 see [CHANGELOG.md](CHANGELOG.md) for what changed.
 
 ## Install (Linux server, runs as a service)
@@ -68,7 +73,8 @@ To use a port other than 7100, run `PORT=8443 ./deploy/install-service.sh`.
 
 **5. On a phone, open `https://<server-ip>:7100`** (typing just `<server-ip>:7100` works too:
 plain `http://` on that port redirects to `https://`). Accept the certificate warning once,
-enter the Core's IP and port under **Destination**, tap **Save changes**, then **Go live**.
+enter the Core's IP and port under **Destination**, tap **Save changes**, then record an
+announcement on the **Announce** tab.
 (`mkcert` or an internal CA gives you a certificate phones trust without the warning;
 replace `cert.pem` and `key.pem` and restart.)
 
@@ -83,7 +89,8 @@ replace `cert.pem` and `key.pem` and restart.)
 | Don't start at boot | `sudo systemctl disable pawblic-address` |
 
 Stopping ends any live page cleanly: the server stops ffmpeg and logs
-`page_stop reason=shutdown`, `stream_stop` and `service_stop`.
+`page_stop reason=shutdown`, `stream_stop` and `service_stop`. Announcements playing or
+waiting are dropped (`announce_stop reason=shutdown`); they're kept in memory only.
 
 ### Updating
 
@@ -137,7 +144,28 @@ Without `cert.pem` and `key.pem` it serves plain HTTP, and phones won't allow th
 
 ## Using it
 
-The page has two tabs: **Talk** and **Settings** (destination, safety, syslog).
+The page has three tabs: **Announce**, **Live** and **Settings** (destination, safety,
+syslog).
+
+### Announce (record, then play)
+
+- **Record** opens the mic (the phone may ask for permission the first time) and starts
+  recording once it's open: the button turns red and shows **Stop**, with a level meter and
+  the time. Recordings can be up to 2 minutes; at 2 minutes recording stops by itself.
+- **Stop** ends the recording and lets the mic go. **Listen** plays it back on the phone.
+  **Record again** throws it away and starts a new one.
+- **Play on the PA** sends the recording to the server, which plays it whole. The page
+  follows it: waiting, playing (with the time), then played. The recording stays on the
+  phone, so tapping **Play on the PA** again repeats it.
+- Announcements play one at a time, in the order they were sent; up to 5 can wait behind
+  the one playing. A phone that's live comes first: announcements wait until it mutes, and
+  nobody can go live in the middle of an announcement.
+- **Stop the announcement** shows on every phone while one is playing or waiting. It stops
+  the one playing and drops any waiting, for when the wrong one went out.
+- Hiding the page while recording stops the recording and keeps what was recorded.
+  Switching tabs does the same.
+
+### Live
 
 - **Go live** the first time opens the mic and connects (a few hundred ms; the phone may
   ask for mic permission). After that, **Mute** and **Go live** are instant: the mic stays
@@ -155,6 +183,9 @@ The page has two tabs: **Talk** and **Settings** (destination, safety, syslog).
   is off (it adds delay), so on the speaker it will feed back.
 - **Settings → Safety → Max talk** (default 5 minutes) mutes a phone that has been live that
   long, in case one is left live in a pocket. Going live again works straight away.
+- Leaving the **Live** tab mutes the phone.
+
+### The connection indicator
 
 Under the logo, a dot shows the state of the server and the stream, and next to it the
 round trip from this phone to the server and its jitter, measured every 2 seconds over the
@@ -200,7 +231,9 @@ Both are things the receiver decodes without an SDP file.
 
 ## Where the latency goes
 
-Every place audio can wait, phone to Core:
+Recorded announcements don't care about any of this: they're played whole, from the
+server, once they've arrived. This is about **Live**. Every place audio can wait, phone to
+Core:
 
 | Where | Holds | How it's kept short |
 |-------|-------|---------------------|
@@ -209,7 +242,7 @@ Every place audio can wait, phone to Core:
 | Phone send queue | up to 60 ms, then chunks are dropped | `MAX_BACKLOG_MS` in `static/app.js` |
 | Wi-Fi / VPN / TCP | a few ms; a lost packet stalls TCP for 200 ms or more | The round trip shown next to the dot. The server drops what arrives late (next row) |
 | Server's TCP ACKs | up to 40 ms if the phone waits for ACKs before sending (Nagle) | `TCP_QUICKACK` after every message |
-| Server jitter buffer | 30 ms to start, up to 120 ms after a stall, trimmed back within 1 s | `PREFILL_MS`, `MAX_MS`, `TRIM_EVERY_S`, `TRIM_SLACK_MS` in `stream.py` |
+| Server jitter buffer (live only) | 30 ms to start, up to 120 ms after a stall, trimmed back within 1 s | `PREFILL_MS`, `MAX_MS`, `TRIM_EVERY_S`, `TRIM_SLACK_MS` in `stream.py` |
 | ffmpeg input | up to 21 ms: it reads raw PCM in 1024-sample packets | Ticks of 512 samples, so they line up with ffmpeg's packets |
 | ffmpeg queue and pipe | normally empty; capped at ~85 ms and 4 KB if ffmpeg hiccups | `QUEUE_CHUNKS`, `PIPE_BYTES` in `relay.py` |
 | ffmpeg encode + RTP | <1 ms for PCM; ~50–80 ms for MP3 (encoder delay, one frame per packet) | Pick PCM |
@@ -249,15 +282,21 @@ Messages are RFC 5424 over UDP, facility local0, with the event name as the MSGI
 <134>1 2026-10-07T22:48:50.440Z pa-server pawblic-address 766 page_stop - event=page_stop client=10.0.4.21 reason=stopped duration_s=42.3 audio_s=42.2 dropped_s=0.0 ffmpeg_exit=0
 ```
 
-A **page** is one Go live → Mute session. The **stream** is the always-on ffmpeg to the Core.
+A **page** is one Go live → Mute session. An **announcement** is one recording sent with
+**Play on the PA**; its `id` counts up from 1 each time the server starts. The **stream** is
+the always-on ffmpeg to the Core.
 
 | Event | Severity | When | Fields |
 |-------|----------|------|--------|
 | `page_start` | info | Someone goes live | `client`, `codec`, `dest`, `sample_rate`, `ffmpeg_pid` (the stream's), `ua` |
 | `page_stop` | info | A page ends, however it ends | `client`, `reason`, `duration_s` (total page time), `audio_s` (audio that reached the server), `dropped_s` (dropped because it arrived too late to play), `gap_s` (silence played because audio hadn't arrived) |
-| `page_busy` | warning | Someone tried to go live while another phone was live | `client`, `live_client` |
+| `page_busy` | warning | Someone tried to go live while another phone was live, or while an announcement was playing | `client`, `live_client` (`announcement` for the latter) |
 | `page_rejected` | warning | Refused: another site, a bad or missing start message, an out-of-date page, or no destination saved | `client`, `reason`, `origin` |
 | `page_error` | error | Something unexpected failed while handling a phone | `client`, `error` |
+| `announce_queued` | info | A recording arrived to be played | `id`, `client`, `audio_s`, `ahead` (announcements playing or waiting before it) |
+| `announce_start` | info | It starts playing | `id`, `client`, `audio_s` |
+| `announce_stop` | info | It ends, however it ends | `id`, `client`, `reason` (`played`, `stopped`, `shutdown`), `by` (who tapped **Stop the announcement**), `audio_s`, `played_s` |
+| `announce_rejected` | warning | A recording was refused: another site, not sent as `application/octet-stream`, too short or longer than 2 minutes, no destination saved, the stream not running, or 5 already waiting | `client`, `reason`, `origin` |
 | `stream_start` | info | ffmpeg started: at boot, after a settings change, or after a failure | `codec`, `dest`, `ffmpeg_pid` |
 | `stream_stop` | info | ffmpeg stopped | `reason` (`settings`, `shutdown`, `error`), `ffmpeg_exit`, `uptime_s` |
 | `stream_error` | error | ffmpeg failed or hung; it's restarted after `retry_in_s` (1 s, doubling up to 30 s) | `error`, `retry_in_s` |
@@ -303,20 +342,22 @@ short queue, and if ffmpeg falls behind, audio is dropped rather than delayed.
 
 What's in place:
 
-- The audio and latency WebSockets and the settings API refuse requests from other
-  websites (the `Origin` header must match the page). Without this, any web page a staff member opened
+- The audio and latency WebSockets, the settings API and the announcement uploads refuse
+  requests from other websites (the `Origin` header must match the page). Without this, any web page a staff member opened
   could put audio on the PA or change the destination through their browser.
-- Settings must be sent as JSON, which other sites can't do without permission.
+- Settings must be sent as JSON, and recordings as `application/octet-stream`, which other
+  sites can't do without permission.
 - Settings are validated: the Core and syslog addresses must be plain IPs or hostnames, so
   nothing can be slipped into ffmpeg's arguments. ffmpeg is run without a shell.
   A hand-edited `settings.json` is checked the same way, and it's written atomically.
-- Request bodies are capped at 16 KB and WebSocket messages at 64 KB.
+- Request bodies are capped at 16 KB (recordings at 2 minutes, 11.5 MB) and WebSocket
+  messages at 64 KB. At most 5 recordings wait to play, so they can't fill the server's memory.
 - Strict Content-Security-Policy, no framing, `nosniff`, no referrer.
 - Values in log lines are sanitised, so nothing a client sends can forge extra log lines.
 
 What isn't yet, so plan around it:
 
-- **There is no login.** Anyone who can reach the page can go live and change the settings,
+- **There is no login.** Anyone who can reach the page can play announcements, go live and change the settings,
   including where audio and syslog go. Keep the server on a network only staff can reach
   (a VLAN or firewall rule), until a password is added.
 - Flask's built-in server starts a thread per connection, without a limit. That's fine on a
@@ -337,6 +378,10 @@ What isn't yet, so plan around it:
 - **Amber "Save a destination to start the stream"** — nothing is streamed until the Core's address has been saved once.
 - **Amber "the stream to the Core isn't running"** — ffmpeg keeps failing; `journalctl -u pawblic-address -e` shows why (`stream_error`).
 - **Live, but the Core hears nothing** — confirm the Core IP and that the receiver's port matches. The receiver should show a stream even when nobody is talking.
+- **"Sent. It plays when the live phone mutes."** — someone is on the **Live** tab. Live always comes first; the announcement plays as soon as they mute.
+- **"An announcement is playing"** on the Live tab — wait for it to end, or tap **Stop the announcement** on the Announce tab.
+- **"Too many announcements are waiting"** — 5 are already queued. Wait, or stop them.
+- **"That recording is too short"** — under 0.3 s, usually a double tap. Record again.
 - **"Another phone is live"** — one phone talks at a time. Go live again once they mute. A phone that silently dropped off frees the line after 5 s.
 - **Choppy audio, or `gap_s`/`dropped_s` in `page_stop`** — the phone's link is losing or delaying packets. Watch the round trip next to the dot from the same spot; move closer to the access point, or off the VPN.
 - **More delay than expected** — check the Core's receiver Buffer is at its minimum, use PCM, and check the round trip on the page. `python tests/latency.py` shows the server's share.
@@ -359,15 +404,15 @@ outlive it.
 ## Layout
 
 ```
-app.py                          Flask routes, the phone WebSocket (talk floor, talk limit), link latency, security
-stream.py                       the always-on stream: clock-driven feeder, jitter buffer, ffmpeg restarts
+app.py                          Flask routes, announcement uploads, the phone WebSocket (talk floor, talk limit), link latency, security
+stream.py                       the always-on stream: clock-driven feeder, jitter buffer, announcement queue, ffmpeg restarts
 relay.py                        the ffmpeg process (command, writer queue, stop, watchdog)
 events.py                       event logging and syslog (RFC 5424 over UDP)
 settings.py                     settings.json load/save/validate
 version.py                      the version number (bump it with every change)
 templates/index.html            the page
-static/app.js                   mic, WebSocket, mute/hold-to-talk, meter, sidetone, link latency, tabs, settings
-static/pcm-worklet.js           AudioWorklet: Float32 → 48 kHz Int16 PCM chunks while live, and the level
+static/app.js                   mic, record/listen/send, WebSocket, mute/hold-to-talk, meter, sidetone, link latency, tabs, settings
+static/pcm-worklet.js           AudioWorklet: Float32 → 48 kHz Int16 PCM chunks while recording or live, and the level
 static/logo.svg                 logo (also the favicon)
 static/apple-touch-icon.png     home-screen icon for phones
 tests/                          pytest suite, fake ffmpegs, soak.py, latency.py
@@ -379,6 +424,8 @@ CLAUDE.md                       project rules
 
 ## Next
 
+- Trim the silence (and the tap) at the start and end of a recording, and level it
+- Saved announcements to replay later
 - Several saved destinations
 - Password on the page (see Security)
 - Dockerfile
