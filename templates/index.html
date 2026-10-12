@@ -100,7 +100,7 @@
     align-items: center;
     padding: 32px 0 40px;
   }
-  #liveBtn {
+  .big {
     width: 188px;
     height: 188px;
     border-radius: 50%;
@@ -113,9 +113,9 @@
     cursor: pointer;
     transition: background-color .25s, border-color .25s, box-shadow .25s, transform .1s;
   }
-  #liveBtn:active { transform: scale(.97); }
+  .big:active { transform: scale(.97); }
   /* Holding the button mustn't select text or open the long-press menu. */
-  #liveBtn { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .big { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .meter {
     width: 188px;
     height: 8px;
@@ -128,9 +128,9 @@
   .meter[data-level="hot"] span { background: var(--brand); }
   .meter[data-level="clip"] span { background: var(--live); }
   .meter[hidden] { display: none; }
-  #liveBtn:disabled { opacity: .55; cursor: default; }
-  #liveBtn:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; }
-  body.live #liveBtn {
+  .big:disabled { opacity: .55; cursor: default; }
+  .big:focus-visible { outline: 3px solid var(--focus); outline-offset: 6px; }
+  .big.on {
     background: var(--live);
     border-color: #ff6a64;
     color: #fff;
@@ -142,17 +142,42 @@
     50%      { box-shadow: 0 0 0 16px var(--live-glow), 0 0 72px var(--live-glow); }
   }
   @media (prefers-reduced-motion: reduce) {
-    body.live #liveBtn { animation: none; }
+    .big.on { animation: none; }
   }
-  #status {
+  .rec-time {
+    margin-top: 12px;
+    min-height: 1.5em;
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .take { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 6px; }
+  .take[hidden] { display: none; }
+  .take button, #stopAnnBtn {
+    min-height: 48px;
+    padding: 0 20px;
+    border: 1px solid var(--ring);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .take button.primary { background: var(--brand); border-color: var(--brand); color: #1d232b; }
+  .take button:disabled { opacity: .55; cursor: default; }
+  .take button:focus-visible, #stopAnnBtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  #stopAnnBtn { margin-top: 14px; border-color: var(--live); color: var(--error-text); }
+  #stopAnnBtn[hidden] { display: none; }
+  #status, #annStatus {
     margin-top: 14px;
     min-height: 3em;
     text-align: center;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
-  #status[data-kind="live"]  { color: var(--text); }
-  #status[data-kind="error"] { color: var(--error-text); }
+  #status[data-kind="live"], #annStatus[data-kind="live"]  { color: var(--text); }
+  #status[data-kind="error"], #annStatus[data-kind="error"] { color: var(--error-text); }
   #connRtt { font-variant-numeric: tabular-nums; white-space: nowrap; }
   #connRtt:not(:empty)::before { content: "· "; }
   .conn[data-state="warn"] #connRtt { color: var(--brand); }
@@ -272,15 +297,30 @@
   </div>
 
   <div class="tabs" role="tablist" aria-label="Pawblic Address">
-    <button id="tabTalk" role="tab" type="button" aria-selected="true" aria-controls="panelTalk">Talk</button>
+    <button id="tabAnnounce" role="tab" type="button" aria-selected="true" aria-controls="panelAnnounce">Announce</button>
+    <button id="tabLive" role="tab" type="button" aria-selected="false" aria-controls="panelLive" tabindex="-1">Live</button>
     <button id="tabSettings" role="tab" type="button" aria-selected="false" aria-controls="panelSettings" tabindex="-1">Settings</button>
   </div>
 
-  <div id="panelTalk" role="tabpanel" aria-labelledby="tabTalk">
+  <div id="panelAnnounce" role="tabpanel" aria-labelledby="tabAnnounce">
+  <div class="tally">
+    <button id="recBtn" class="big" type="button" aria-pressed="false">Record</button>
+    <div id="recMeter" class="meter" role="img" aria-label="Microphone level" hidden><span></span></div>
+    <div id="recTime" class="rec-time" aria-hidden="true"></div>
+    <div class="take" id="take" hidden>
+      <button id="listenBtn" type="button">Listen</button>
+      <button id="playBtn" class="primary" type="button">Play on the PA</button>
+    </div>
+    <div id="annStatus" aria-live="polite">Record an announcement, listen to check it, then play it on the PA.</div>
+    <button id="stopAnnBtn" type="button" hidden>Stop the announcement</button>
+  </div>
+  </div>
+
+  <div id="panelLive" role="tabpanel" aria-labelledby="tabLive" hidden>
 
   <div class="tally">
-    <button id="liveBtn" type="button" aria-pressed="false">Go live</button>
-    <div id="meter" class="meter" role="img" aria-label="Microphone level" hidden><span></span></div>
+    <button id="liveBtn" class="big" type="button" aria-pressed="false">Go live</button>
+    <div id="liveMeter" class="meter" role="img" aria-label="Microphone level" hidden><span></span></div>
     <div id="status" aria-live="polite">Ready</div>
     <label class="toggle"><input id="holdToTalk" type="checkbox"> Hold to talk (or hold the space bar)</label>
     <label class="toggle"><input id="sidetone" type="checkbox"> Hear yourself while live (headphones only)</label>

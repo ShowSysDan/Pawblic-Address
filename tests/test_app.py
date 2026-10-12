@@ -43,7 +43,8 @@ def test_security_headers(client):
 
 def test_health(client):
     r = client.get("/api/health")
-    assert r.get_json() == {"ok": True, "version": VERSION, "live": False, "stream": "off"}
+    assert r.get_json() == {"ok": True, "version": VERSION, "live": False, "stream": "off",
+                            "announcements": 0}
     assert r.headers["Cache-Control"] == "no-store"
 
 
@@ -598,3 +599,75 @@ def test_redirect_cannot_be_steered_or_add_headers(https_server, head, location)
     reply = plain_get(port, head)
     assert re.findall(r"\r\nLocation: ([^\r\n]*)\r\n", reply) == [location.format(port=port)]
     assert "Set-Cookie" not in reply and "\nLocation: y" not in reply
+
+
+# ---- recorded announcements -----------------------------------------------------
+
+PCM = "application/octet-stream"
+
+
+@pytest.fixture
+def announcer(server, client):
+    yield client
+    pa._stream.announcements.stop_all("test")
+
+
+def test_announcement_is_played_on_the_core(announcer, core, syslog):
+    r = announcer.post("/api/announce", data=b"\x66\x00" * 48000, content_type=PCM)  # 1 s
+    assert r.status_code == 200, r.get_json()
+    body = r.get_json()
+    assert body["audio_s"] == 1.0 and body["ahead"] == 0
+    assert "audio_s=1.0" in syslog.wait_for("announce_queued")
+    syslog.wait_for("announce_start")
+    assert "reason=played" in syslog.wait_for("announce_stop", timeout=5)
+    st = announcer.get("/api/announce").get_json()
+    assert st["playing"] is None and st["finished"][str(body["id"])] == "played"
+
+
+def test_announcement_refused_from_another_site(announcer, syslog):
+    r = announcer.post("/api/announce", data=b"\0" * 96000, content_type=PCM,
+                       headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+    assert "evil.example" in syslog.wait_for("announce_rejected")
+    assert len(pa._stream.announcements) == 0
+
+
+@pytest.mark.parametrize("size, content_type, status", [
+    (96000, "text/plain", 415),                    # what a cross-site form could send
+    (1000, PCM, 400),                              # too short
+    (pa.MAX_ANNOUNCE_BYTES + 2, PCM, 413),
+], ids=["form", "short", "long"])
+def test_bad_announcements_are_refused(announcer, size, content_type, status):
+    r = announcer.post("/api/announce", data=b"\0" * size, content_type=content_type)
+    assert r.status_code == status
+    assert len(pa._stream.announcements) == 0
+
+
+def test_announcement_without_a_destination_is_refused(client):
+    r = client.post("/api/announce", data=b"\0" * 96000, content_type=PCM)
+    assert r.status_code == 409
+
+
+def test_announcements_wait_for_the_live_phone_and_it_cannot_cut_in(server, announcer, syslog):
+    ws = go_live(server)
+    r = announcer.post("/api/announce", data=b"\0" * 96000, content_type=PCM)
+    assert r.get_json()["live"] is True
+    time.sleep(0.3)
+    assert announcer.get("/api/announce").get_json()["playing"] is None   # still waiting
+    send(ws, type="mute")
+    assert recv(ws)["type"] == "muted"
+    wait_for(lambda: announcer.get("/api/announce").get_json()["playing"] is not None)
+    send(ws, type="talk")
+    msg = recv(ws)
+    assert msg["type"] == "refused" and "announcement" in msg["msg"]
+    assert "live_client=announcement" in syslog.wait_for("page_busy")
+    ws.close()
+
+
+def test_stop_ends_the_announcement(announcer, syslog):
+    announcer.post("/api/announce", data=b"\0" * 96000 * 5, content_type=PCM)
+    wait_for(lambda: announcer.get("/api/announce").get_json()["playing"] is not None)
+    assert announcer.post("/api/announce/stop").get_json() == {"stopped": 1}
+    assert "reason=stopped" in syslog.wait_for("announce_stop")
+    assert announcer.post("/api/announce/stop",
+                          headers={"Origin": "https://evil.example"}).status_code == 403

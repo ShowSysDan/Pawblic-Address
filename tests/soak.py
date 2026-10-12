@@ -6,7 +6,8 @@
 
 Starts app.py as a separate process, drives pages through it in every way a page can
 end (Mute, tab closed, Wi-Fi drop, silence, bad hello, oversized message, a second
-phone, mute and talk again on one connection), and samples the server's memory,
+phone, mute and talk again on one connection), plays rounds of recorded announcements
+through the queue, and samples the server's memory,
 threads, open files and ffmpeg children as it goes. Checks the stream to the Core runs
 the whole time, at real-time rate, as one ffmpeg. Then checks SIGTERM and SIGKILL
 during a live page leave no ffmpeg behind. Exits non-zero if anything leaked.
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import simple_websocket
@@ -143,6 +145,16 @@ class Server:
     @property
     def pid(self):
         return self.proc.pid
+
+    def announce(self, pcm=None, path="/api/announce"):
+        """POST a recording (or to stop, with pcm=None). Returns (status, JSON reply)."""
+        req = urllib.request.Request(self.base + path, data=pcm or b"", method="POST",
+                                     headers={"Content-Type": "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=_TLS) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, json.load(e)
 
     def health(self):
         with urllib.request.urlopen(self.base + "/api/health", timeout=3, context=_TLS) as r:
@@ -361,6 +373,39 @@ def main():
         if srv.wait_idle() is None:
             problems.append("long page never ended")
         row("end of long page", metrics(srv.pid), start_rss)
+
+    print("\nRecorded announcements: 6 rounds of half-second ones, sent until the queue is full:")
+    clip = CHUNK * 47  # 0.5 s
+    a_start = metrics(srv.pid)
+    accepted = 0
+    for rnd in range(6):
+        n = 0
+        while srv.announce(clip)[0] == 200 and n < 8:
+            n += 1
+        accepted += n
+        if n not in (5, 6):  # 5 waiting, and maybe one already playing
+            problems.append(f"round {rnd}: {n} announcements accepted before the queue was full")
+        t0 = time.monotonic()
+        while srv.health()["announcements"] and time.monotonic() - t0 < 10:
+            time.sleep(0.05)
+        took = time.monotonic() - t0
+        if srv.health()["announcements"]:
+            problems.append(f"round {rnd}: announcements still waiting after 10 s")
+        elif not n * 0.5 - 0.6 < took < n * 0.5 + 1.5:  # real time, from the server's clock
+            problems.append(f"round {rnd}: {n * 0.5} s of announcements took {took:.1f} s")
+    srv.announce(CHUNK * 47 * 4)  # 2 s, stopped half a second in
+    time.sleep(0.5)
+    _, reply = srv.announce(path="/api/announce/stop")
+    if reply.get("stopped") != 1:
+        problems.append(f"stopping the playing announcement: {reply}")
+    time.sleep(1)
+    row("after announcements", metrics(srv.pid), a_start)
+    queued, ended = syslog.count("announce_queued"), syslog.count("announce_stop")
+    print(f"  announce_queued {queued}, announce_stop {ended}, "
+          f"announce_rejected {syslog.count('announce_rejected')}")
+    if queued != accepted + 1 or ended != accepted + 1:
+        problems.append(f"announce_queued {queued} / announce_stop {ended}, "
+                        f"expected {accepted + 1} each")
 
     time.sleep(2)
     end = metrics(srv.pid)

@@ -1,7 +1,8 @@
 """The always-on stream to the Core: one ffmpeg, fed from the server's own clock.
 
 Every tick (512 samples, about 10.7 ms) the feeder thread hands ffmpeg exactly one tick of
-audio: the talking phone's, from a small jitter buffer, or silence when nobody is talking.
+audio: the live phone's, from a small jitter buffer; otherwise the recorded announcement
+that is playing, from the announcement queue; otherwise silence.
 So the Core receives one steady, unbroken RTP stream from the moment the server starts:
 
 - going live costs nothing on the Core's side: no new ffmpeg, no new RTP stream to lock on to;
@@ -14,6 +15,8 @@ change, and restarts by itself (with backoff) if ffmpeg dies. ffmpeg is always s
 stopped by relay.FFmpegRelay, in a finally.
 """
 
+import collections
+import itertools
 import logging
 import threading
 import time
@@ -38,6 +41,9 @@ RESYNC_AFTER_S = 0.1   # if the feeder itself falls this far behind, restart its
 RESTART_MIN_S = 1.0    # wait before restarting a failed ffmpeg; doubles up to RESTART_MAX_S
 RESTART_MAX_S = 30.0
 STOP_TIMEOUT_S = 10.0
+MAX_ANNOUNCE_S = 120   # longest recorded announcement accepted
+MIN_ANNOUNCE_S = 0.3   # shorter than this is a mis-tap, not an announcement
+MAX_QUEUED = 5         # announcements waiting to play, besides the one playing
 
 
 def _bytes(ms: float) -> int:
@@ -99,6 +105,11 @@ class JitterBuffer:
                 self._low, self._ticks = None, 0
             return True
 
+    def active(self) -> bool:
+        """A phone is live, or the end of its talk is still playing out."""
+        with self._lock:
+            return self._talking or self._playing or bool(self._buf)
+
     def take(self) -> bytes:
         """One tick of audio for ffmpeg: the oldest waiting audio, padded with silence."""
         with self._lock:
@@ -135,11 +146,127 @@ class JitterBuffer:
         self.dropped_bytes += n
 
 
+class QueueFull(Exception):
+    pass
+
+
+class Announcement:
+    def __init__(self, id_: int, client: str, pcm: bytes):
+        self.id = id_
+        self.client = client
+        self.pcm = pcm[:len(pcm) & ~1]
+        self.pos = 0
+
+    @property
+    def audio_s(self) -> float:
+        return round(len(self.pcm) / 2 / RATE, 1)
+
+    @property
+    def played_s(self) -> float:
+        return round(self.pos / 2 / RATE, 1)
+
+
+class Announcements:
+    """Recorded announcements, played whole and in the order they arrived.
+
+    The feeder takes one tick at a time from the one playing. A live phone always comes
+    first: while one holds the floor (hold()), the next announcement waits; while an
+    announcement plays, hold() fails, so a phone can't cut into the middle of one.
+    """
+
+    def __init__(self, max_queued=MAX_QUEUED):
+        self.max_queued = max_queued
+        self._lock = threading.Lock()
+        self._queue = collections.deque()
+        self._current = None
+        self._held = False
+        self._ids = itertools.count(1)
+        self._finished = collections.OrderedDict()  # recent id -> how it ended, for the page
+
+    def add(self, client: str, pcm: bytes) -> tuple:
+        """Queue an announcement. Returns (it, how many play before it). Raises QueueFull."""
+        with self._lock:
+            if len(self._queue) >= self.max_queued:
+                raise QueueFull()
+            a = Announcement(next(self._ids), client, pcm)
+            ahead = len(self._queue) + (self._current is not None)
+            self._queue.append(a)
+        events.emit("announce_queued", id=a.id, client=client, audio_s=a.audio_s, ahead=ahead)
+        return a, ahead
+
+    def hold(self) -> bool:
+        """A phone wants to go live: keep the next announcement waiting. False if one is playing."""
+        with self._lock:
+            if self._current is not None:
+                return False
+            self._held = True
+            return True
+
+    def release(self):
+        with self._lock:
+            self._held = False
+
+    def take(self):
+        """The next tick of the playing announcement, starting the next one if it's time.
+        None when there's nothing to play."""
+        started = finished = None
+        with self._lock:
+            a = self._current
+            if a is None:
+                if self._held or not self._queue:
+                    return None
+                a = started = self._current = self._queue.popleft()
+            out = a.pcm[a.pos:a.pos + TICK_BYTES]
+            a.pos += len(out)
+            if a.pos >= len(a.pcm):
+                finished, self._current = a, None
+                self._ended(a, "played")
+        if started:
+            events.emit("announce_start", id=a.id, client=a.client, audio_s=a.audio_s)
+        if finished:
+            events.emit("announce_stop", id=a.id, client=a.client, reason="played",
+                        audio_s=a.audio_s, played_s=a.played_s)
+        return out + SILENCE[len(out):] if out else None
+
+    def stop_all(self, reason: str, by: str = None) -> int:
+        """Stop the playing announcement and drop the queued ones. Returns how many."""
+        with self._lock:
+            gone = ([self._current] if self._current else []) + list(self._queue)
+            self._current = None
+            self._queue.clear()
+            for a in gone:
+                self._ended(a, reason)
+        for a in gone:
+            events.emit("announce_stop", id=a.id, client=a.client, reason=reason, by=by,
+                        audio_s=a.audio_s, played_s=a.played_s)
+        return len(gone)
+
+    def _ended(self, a: Announcement, how: str):
+        self._finished[a.id] = how
+        while len(self._finished) > 20:
+            self._finished.popitem(last=False)
+
+    def status(self) -> dict:
+        with self._lock:
+            a = self._current
+            return {
+                "playing": a and {"id": a.id, "audio_s": a.audio_s, "played_s": a.played_s},
+                "queued": [q.id for q in self._queue],
+                "held": self._held,  # a phone is live, so the next one waits
+                "finished": {str(k): v for k, v in self._finished.items()},
+            }
+
+    def __len__(self):
+        with self._lock:
+            return len(self._queue) + (self._current is not None)
+
+
 class Stream:
     """Owns the feeder thread and, through it, the one ffmpeg."""
 
     def __init__(self):
         self.buffer = JitterBuffer()
+        self.announcements = Announcements()
         self._thread = None
         self._wake = threading.Event()
         self._stopping = False
@@ -239,5 +366,11 @@ class Stream:
                 # Core a burst it would then play late; skip the missed time instead.
                 log.warning("stream clock fell %.0f ms behind; resynced", -delay * 1000)
                 t0, n = time.monotonic(), 0
-            r.write(self.buffer.take())
+            r.write(self.next_tick())
             n += 1
+
+    def next_tick(self) -> bytes:
+        """The live phone if there is one, else the playing announcement, else silence."""
+        if self.buffer.active():
+            return self.buffer.take()
+        return self.announcements.take() or SILENCE

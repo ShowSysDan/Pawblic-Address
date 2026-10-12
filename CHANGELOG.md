@@ -3,6 +3,28 @@
 Every change to Pawblic Address gets a new version number here and in `version.py`
 (see CLAUDE.md). Newest first.
 
+## [0.8.0] - 2026-10-12
+
+### Added
+- **Record, then play** is now the main way to page, on a new **Announce** tab (the first
+  tab). Tap **Record**, say the announcement, tap **Stop**, **Listen** to check it, then
+  **Play on the PA**. The server plays the whole recording into the always-on stream, so
+  the network can't add delay or dropouts, and nothing goes out until the talker is happy
+  with it. Up to 2 minutes per recording. **Play on the PA** again repeats it.
+- Announcements play one at a time, in order, with up to 5 waiting. A live phone comes
+  first; nobody can go live in the middle of an announcement. **Stop the announcement**
+  (shown on every phone while one plays or waits) stops it and drops the queue.
+- `POST /api/announce` (48 kHz 16-bit mono PCM as `application/octet-stream`, same-site
+  only), `GET /api/announce`, `POST /api/announce/stop`. `/api/health` has `announcements`.
+- Events `announce_queued`, `announce_start`, `announce_stop`, `announce_rejected`.
+
+### Changed
+- Live paging moved to the **Live** tab, unchanged otherwise. Leaving the tab mutes.
+- `page_busy` is also logged, with `live_client=announcement`, when someone tries to go
+  live while an announcement is playing.
+- Needs Flask 3.1 or newer (for the larger upload limit on recordings only). Re-running
+  `./deploy/install-service.sh` installs it.
+
 ## [0.7.0] - 2026-10-08
 
 ### Changed
